@@ -14,10 +14,15 @@ const transporter = nodemailer.createTransport({
 })
 
 
+const getFrontendUrl = () => {
+    return (process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://127.0.0.1:5500').replace(/\/+$/, '')
+}
+
 const sendVerificationEmail = async (email, token) => {
 
+    const frontendUrl = getFrontendUrl()
     const verificationLink =
-        `http://127.0.0.1:5500/pages/verify-email.html?token=${token}`
+        `${frontendUrl}/pages/auth/verify-email.html?token=${token}`
 
 
     await transporter.sendMail({
@@ -64,8 +69,9 @@ const sendVerificationEmail = async (email, token) => {
 
 const sendResetPasswordEmail = async (email, token) => {
 
+    const frontendUrl = getFrontendUrl()
     const resetLink =
-        `http://127.0.0.1:5500/pages/auth/reset-password.html?token=${token}`
+        `${frontendUrl}/pages/auth/reset-password.html?token=${token}`
 
 
     await transporter.sendMail({

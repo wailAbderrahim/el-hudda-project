@@ -30,9 +30,13 @@ const app = express()
 ========================================================= */
 
 const allowedOrigins = [
+    'https://el-hudda.vercel.app',
     'http://127.0.0.1:5500',
     'http://localhost:5500',
-    process.env.CLIENT_URL
+    'http://127.0.0.1:5000',
+    'http://localhost:5000',
+    process.env.CLIENT_URL,
+    process.env.FRONTEND_URL
 ].filter(Boolean)
 
 
@@ -41,12 +45,15 @@ app.use(
         origin: function (origin, callback) {
 
             // Allow requests without origin
-            // such as Postman or server-to-server requests
+            // such as Postman, server-to-server, or local tools
             if (!origin) {
                 return callback(null, true)
             }
 
-            if (allowedOrigins.includes(origin)) {
+            const cleanOrigin = origin.replace(/\/+$/, '')
+            const isAllowed = allowedOrigins.some(o => o.replace(/\/+$/, '') === cleanOrigin)
+
+            if (isAllowed) {
                 return callback(null, true)
             }
 

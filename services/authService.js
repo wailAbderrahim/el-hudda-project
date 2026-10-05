@@ -89,10 +89,14 @@ const registerUser = async (userData) => {
         })
 
 
-    await sendVerificationEmail(
-        normalizedEmail,
-        token
-    )
+    try {
+        await sendVerificationEmail(
+            normalizedEmail,
+            token
+        )
+    } catch (mailErr) {
+        console.error('Failed to send verification email upon registration:', mailErr)
+    }
 
 
     return {
@@ -199,55 +203,122 @@ const verifyEmail = async (token) => {
 }
 
 
+const resendRateLimitMap = new Map()
+
+const resendVerification = async (email) => {
+
+    if (!email) {
+        const err = new Error('البريد الإلكتروني مطلوب')
+        err.statusCode = 400
+        throw err
+    }
+
+    const normalizedEmail = email.trim().toLowerCase()
+
+    // Rate limiting: allow at most once per 60 seconds per email
+    const now = Date.now()
+    const lastSent = resendRateLimitMap.get(normalizedEmail)
+    if (lastSent && (now - lastSent) < 60 * 1000) {
+        const remainingSeconds = Math.ceil((60 * 1000 - (now - lastSent)) / 1000)
+        const err = new Error(`يرجى الانتظار ${remainingSeconds} ثانية قبل إعادة إرسال رابط التفعيل`)
+        err.statusCode = 429
+        throw err
+    }
+
+    const safeSuccessMessage = 'إذا كان البريد الإلكتروني مسجلاً، فقد تم إرسال رابط تفعيل جديد صالح لمدة 15 دقيقة.'
+
+    const user = await userModel.findOne({ email: normalizedEmail })
+
+    // Safe response: do not expose whether an account exists
+    if (!user) {
+        return {
+            message: safeSuccessMessage
+        }
+    }
+
+    // If already verified, do not send another verification email
+    if (user.isVerified === true) {
+        return {
+            message: 'هذا البريد الإلكتروني مفعّل مسبقاً. يمكنك تسجيل الدخول مباشرة.',
+            isAlreadyVerified: true
+        }
+    }
+
+    // Generate new token (previous token becomes invalid)
+    const token = crypto.randomBytes(32).toString('hex')
+    const tokenExpires = new Date(Date.now() + 15 * 60 * 1000)
+
+    user.verificationToken = token
+    user.verificationTokenExpires = tokenExpires
+
+    await user.save()
+
+    // Update rate limit timestamp
+    resendRateLimitMap.set(normalizedEmail, now)
+
+    // Send new verification email
+    try {
+        await sendVerificationEmail(normalizedEmail, token)
+    } catch (emailErr) {
+        console.error('Failed to send verification email:', emailErr)
+    }
+
+    return {
+        message: safeSuccessMessage
+    }
+}
+
+
 const login = async (userData) => {
 
     const { email, password } = userData
 
-
-    // Login only requires email and password
+    // Login requires email and password
     if (!email || !password) {
-        throw new Error('email and password are required')
+        const err = new Error('email and password are required')
+        err.statusCode = 400
+        throw err
     }
 
+    const normalizedEmail = email.trim().toLowerCase()
 
     // Find user by email
-    const user = await userModel.findOne({ email })
+    const user = await userModel.findOne({ email: normalizedEmail })
 
-
+    // 1. Check credentials
     if (!user) {
-        throw new Error('user is not exist')
+        const err = new Error('invalid email or password please enter correct data')
+        err.statusCode = 400
+        throw err
     }
 
-
-    // Check email verification
-    if (!user.isVerified) {
-        throw new Error(
-            'Please verify your email before logging in'
-        )
-    }
-
-
-    // Check password
-    const isMatch =
-        await bcrypt.compare(password, user.password)
-
+    const isMatch = await bcrypt.compare(password, user.password)
 
     if (!isMatch) {
-        throw new Error(
-            'invalid email or password please enter correct data'
-        )
+        const err = new Error('invalid email or password please enter correct data')
+        err.statusCode = 400
+        throw err
     }
 
-
-    // Check account status
-    if (!user.isActive) {
-        throw new Error(
-            'Your account is deactivated. Please contact support for assistance.'
-        )
+    // 2. Check account active status
+    if (user.isActive === false) {
+        const err = new Error('Your account has been disabled. Please contact the administrator.')
+        err.statusCode = 403
+        err.code = 'ACCOUNT_DISABLED'
+        err.isActive = false
+        throw err
     }
 
+    // 3. Check email verification
+    if (user.isVerified === false) {
+        const err = new Error('Your email address has not been verified yet. Please verify your email to continue.')
+        err.statusCode = 403
+        err.code = 'EMAIL_NOT_VERIFIED'
+        err.isUnverified = true
+        throw err
+    }
 
-    // Create JWT
+    // 4. Create JWT
     const token = jwt.sign(
         {
             id: user._id,
@@ -259,10 +330,8 @@ const login = async (userData) => {
         }
     )
 
-
     // Remove password from returned user
     user.password = undefined
-
 
     return {
         message: 'user successfully connected',
@@ -276,6 +345,7 @@ module.exports = {
     registerUser,
     login,
     verifyEmail,
+    resendVerification,
     forgotPassword,
     resetPassword
 }

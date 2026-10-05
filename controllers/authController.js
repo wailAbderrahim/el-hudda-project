@@ -52,7 +52,39 @@ const login = async (req, res) => {
 
     } catch (err) {
 
-        res.status(400).json({
+        const statusCode = err.statusCode || 400
+
+        res.status(statusCode).json({
+            message: err.message,
+            code: err.code || null,
+            isUnverified: Boolean(err.isUnverified),
+            isActive: err.isActive !== undefined ? err.isActive : null
+        })
+
+    }
+}
+
+
+const resendVerification = async (req, res) => {
+    try {
+
+        const { email } = req.body
+
+        if (!email) {
+            return res.status(400).json({
+                message: 'Email is required'
+            })
+        }
+
+        const result = await authService.resendVerification(email)
+
+        res.status(200).json(result)
+
+    } catch (err) {
+
+        const statusCode = err.statusCode || 400
+
+        res.status(statusCode).json({
             message: err.message
         })
 
@@ -110,6 +142,7 @@ module.exports = {
     registerUser,
     login,
     verifyEmail,
+    resendVerification,
     forgotPassword,
     resetPassword
 }
