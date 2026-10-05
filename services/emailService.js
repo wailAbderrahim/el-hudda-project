@@ -13,7 +13,11 @@ const transporter = nodemailer.createTransport({
 })
 
 const getFrontendUrl = () => {
-    return (process.env.FRONTEND_URL || process.env.CLIENT_URL || 'https://el-hudda.vercel.app').replace(/\/+$/, '')
+    const raw = (process.env.FRONTEND_URL || process.env.CLIENT_URL || '').trim().replace(/\/+$/, '')
+    if (raw && !raw.includes('localhost') && !raw.includes('127.0.0.1') && !raw.includes('onrender.com')) {
+        return raw
+    }
+    return 'https://el-hudda.vercel.app'
 }
 
 /**
@@ -21,7 +25,7 @@ const getFrontendUrl = () => {
  */
 const sendVerificationEmail = async (email, token) => {
     const frontendUrl = getFrontendUrl()
-    const verificationLink = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}`
+    const verificationLink = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`
 
     await transporter.sendMail({
         from: `"الهدى للقرآن" <${process.env.EMAIL_USER}>`,
