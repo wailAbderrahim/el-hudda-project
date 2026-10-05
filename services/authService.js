@@ -4,9 +4,7 @@ const jwt = require('jsonwebtoken')
 const { sendVerificationEmail, sendResetPasswordEmail } = require('./emailService')
 const crypto = require('crypto')
 
-
 const registerUser = async (userData) => {
-
     const {
         firstName,
         lastName,
@@ -18,198 +16,207 @@ const registerUser = async (userData) => {
         password
     } = userData
 
-
     if (
-        !firstName ||
-        !lastName ||
-        !phone ||
-        !placeOfBirth ||
-        !municipalityOfBirth ||
+        !firstName || !firstName.trim() ||
+        !lastName || !lastName.trim() ||
+        !phone || !phone.trim() ||
+        !placeOfBirth || !placeOfBirth.trim() ||
+        !municipalityOfBirth || !municipalityOfBirth.trim() ||
         !educationLevel ||
-        !email ||
+        !email || !email.trim() ||
         !password
     ) {
-        throw new Error('all fields are required')
+        const err = new Error('All fields are required')
+        err.statusCode = 400
+        err.code = 'INVALID_INPUT'
+        throw err
     }
 
+    if (password.length < 8) {
+        const err = new Error('Password must be at least 8 characters')
+        err.statusCode = 400
+        err.code = 'PASSWORD_TOO_SHORT'
+        throw err
+    }
 
-    const normalizedEmail =
-        email.trim().toLowerCase()
+    const normalizedEmail = email.trim().toLowerCase()
 
-
-    const isExist =
-        await userModel.findOne({
-            email: normalizedEmail
-        })
-
-
+    const isExist = await userModel.findOne({ email: normalizedEmail })
     if (isExist) {
-        throw new Error('user is already exist')
+        const err = new Error('User already exists')
+        err.statusCode = 400
+        err.code = 'EMAIL_ALREADY_EXISTS'
+        throw err
     }
 
+    const hashedPassword = await bcrypt.hash(password, 10)
+    const token = crypto.randomBytes(32).toString('hex')
+    const tokenExpires = new Date(Date.now() + 15 * 60 * 1000)
 
-    const hashedPassword =
-        await bcrypt.hash(password, 10)
-
-
-    const token =
-        crypto.randomBytes(32).toString('hex')
-
-
-    const tokenExpires =
-        new Date(
-            Date.now() + 15 * 60 * 1000
-        )
-
-
-    const user =
-        await userModel.create({
-
-            firstName,
-            lastName,
-
-            name: `${firstName} ${lastName}`,
-
-            phone,
-            placeOfBirth,
-            municipalityOfBirth,
-            educationLevel,
-
-            email: normalizedEmail,
-
-            password: hashedPassword,
-
-            role: 'student',
-
-            isVerified: false,
-
-            verificationToken: token,
-            verificationTokenExpires: tokenExpires
-
-        })
-
+    const user = await userModel.create({
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        name: (userData.name && userData.name.trim()) || `${firstName.trim()} ${lastName.trim()}`,
+        phone: phone.trim(),
+        placeOfBirth: placeOfBirth.trim(),
+        municipalityOfBirth: municipalityOfBirth.trim(),
+        educationLevel,
+        email: normalizedEmail,
+        password: hashedPassword,
+        role: 'student',
+        isVerified: false,
+        verificationToken: token,
+        verificationTokenExpires: tokenExpires
+    })
 
     try {
-        await sendVerificationEmail(
-            normalizedEmail,
-            token
-        )
+        await sendVerificationEmail(normalizedEmail, token)
     } catch (mailErr) {
         console.error('Failed to send verification email upon registration:', mailErr)
     }
 
-
     return {
-        message: 'user created'
+        success: true,
+        message: 'User created successfully',
+        data: {
+            id: user._id,
+            email: normalizedEmail,
+            role: user.role
+        }
     }
 }
 
-
 const resetPassword = async (token, newPassword) => {
+    if (!token || !token.trim()) {
+        const err = new Error('Reset token is required')
+        err.statusCode = 400
+        err.code = 'TOKEN_REQUIRED'
+        throw err
+    }
+
+    if (!newPassword || newPassword.length < 8) {
+        const err = new Error('Password must be at least 8 characters')
+        err.statusCode = 400
+        err.code = 'PASSWORD_TOO_SHORT'
+        throw err
+    }
 
     const user = await userModel.findOne({
-        resetPasswordToken: token
+        resetPasswordToken: token.trim()
     })
 
     if (!user) {
-        throw new Error('invalid token')
+        const err = new Error('Invalid reset token')
+        err.statusCode = 400
+        err.code = 'INVALID_TOKEN'
+        throw err
     }
-
 
     if (user.resetPasswordTokenExpires < new Date()) {
-        throw new Error('Reset password token has expired')
+        const err = new Error('Reset password token has expired')
+        err.statusCode = 400
+        err.code = 'TOKEN_EXPIRED'
+        throw err
     }
 
-
-    const hashedPassword =
-        await bcrypt.hash(newPassword, 10)
-
-
+    const hashedPassword = await bcrypt.hash(newPassword, 10)
     user.password = hashedPassword
-
     user.resetPasswordToken = undefined
     user.resetPasswordTokenExpires = undefined
-
     await user.save()
 
-
     return {
+        success: true,
         message: 'Password reset successfully'
     }
 }
 
-
 const forgotPassword = async (email) => {
-
-    const user = await userModel.findOne({ email })
-
-    if (!user) {
-        throw new Error('user is not exist')
+    if (!email || !email.trim()) {
+        const err = new Error('Email is required')
+        err.statusCode = 400
+        err.code = 'INVALID_INPUT'
+        throw err
     }
 
+    const normalizedEmail = email.trim().toLowerCase()
+    const user = await userModel.findOne({ email: normalizedEmail })
 
-    const token =
-        crypto.randomBytes(32).toString('hex')
+    // Safe response: do not expose whether an account exists
+    if (!user) {
+        return {
+            success: true,
+            message: 'If the email exists, a password reset link has been sent'
+        }
+    }
 
-    const tokenExpires =
-        new Date(Date.now() + 15 * 60 * 1000)
-
+    const token = crypto.randomBytes(32).toString('hex')
+    const tokenExpires = new Date(Date.now() + 15 * 60 * 1000)
 
     user.resetPasswordToken = token
     user.resetPasswordTokenExpires = tokenExpires
-
-
     await user.save()
 
-
-    await sendResetPasswordEmail(email, token)
-
+    try {
+        await sendResetPasswordEmail(normalizedEmail, token)
+    } catch (mailErr) {
+        console.error('Failed to send reset password email:', mailErr)
+    }
 
     return {
+        success: true,
         message: 'Password reset email sent'
     }
 }
 
-
 const verifyEmail = async (token) => {
+    if (!token || !token.trim()) {
+        const err = new Error('Verification token is required')
+        err.statusCode = 400
+        err.code = 'TOKEN_REQUIRED'
+        throw err
+    }
 
     const user = await userModel.findOne({
-        verificationToken: token
+        verificationToken: token.trim()
     })
 
-
     if (!user) {
-        throw new Error('Invalid verification token')
+        const err = new Error('Invalid verification token')
+        err.statusCode = 400
+        err.code = 'INVALID_VERIFICATION_TOKEN'
+        throw err
     }
-
 
     if (user.verificationTokenExpires < new Date()) {
-        throw new Error('Verification token has expired')
+        const err = new Error('Verification token has expired')
+        err.statusCode = 400
+        err.code = 'VERIFICATION_TOKEN_EXPIRED'
+        throw err
     }
-
 
     user.isVerified = true
-
     user.verificationToken = undefined
     user.verificationTokenExpires = undefined
-
-
     await user.save()
 
-
     return {
-        message: 'Email verified successfully'
+        success: true,
+        message: 'Email verified successfully',
+        data: {
+            email: user.email,
+            isVerified: true
+        }
     }
 }
-
 
 const resendRateLimitMap = new Map()
 
 const resendVerification = async (email) => {
-
-    if (!email) {
-        const err = new Error('البريد الإلكتروني مطلوب')
+    if (!email || !email.trim()) {
+        const err = new Error('Email is required')
         err.statusCode = 400
+        err.code = 'INVALID_INPUT'
         throw err
     }
 
@@ -222,6 +229,7 @@ const resendVerification = async (email) => {
         const remainingSeconds = Math.ceil((60 * 1000 - (now - lastSent)) / 1000)
         const err = new Error(`يرجى الانتظار ${remainingSeconds} ثانية قبل إعادة إرسال رابط التفعيل`)
         err.statusCode = 429
+        err.code = 'RATE_LIMITED'
         throw err
     }
 
@@ -232,6 +240,7 @@ const resendVerification = async (email) => {
     // Safe response: do not expose whether an account exists
     if (!user) {
         return {
+            success: true,
             message: safeSuccessMessage
         }
     }
@@ -239,6 +248,8 @@ const resendVerification = async (email) => {
     // If already verified, do not send another verification email
     if (user.isVerified === true) {
         return {
+            success: true,
+            code: 'ALREADY_VERIFIED',
             message: 'هذا البريد الإلكتروني مفعّل مسبقاً. يمكنك تسجيل الدخول مباشرة.',
             isAlreadyVerified: true
         }
@@ -250,7 +261,6 @@ const resendVerification = async (email) => {
 
     user.verificationToken = token
     user.verificationTokenExpires = tokenExpires
-
     await user.save()
 
     // Update rate limit timestamp
@@ -264,54 +274,52 @@ const resendVerification = async (email) => {
     }
 
     return {
+        success: true,
         message: safeSuccessMessage
     }
 }
 
-
 const login = async (userData) => {
-
     const { email, password } = userData
 
-    // Login requires email and password
-    if (!email || !password) {
-        const err = new Error('email and password are required')
+    if (!email || !email.trim() || !password) {
+        const err = new Error('Email and password are required')
         err.statusCode = 400
+        err.code = 'INVALID_INPUT'
         throw err
     }
 
     const normalizedEmail = email.trim().toLowerCase()
-
-    // Find user by email
     const user = await userModel.findOne({ email: normalizedEmail })
 
     // 1. Check credentials
     if (!user) {
-        const err = new Error('invalid email or password please enter correct data')
+        const err = new Error('Invalid email or password')
         err.statusCode = 400
+        err.code = 'INVALID_CREDENTIALS'
         throw err
     }
 
     const isMatch = await bcrypt.compare(password, user.password)
-
     if (!isMatch) {
-        const err = new Error('invalid email or password please enter correct data')
+        const err = new Error('Invalid email or password')
         err.statusCode = 400
+        err.code = 'INVALID_CREDENTIALS'
         throw err
     }
 
     // 2. Check account active status
     if (user.isActive === false) {
-        const err = new Error('Your account has been disabled. Please contact the administrator.')
+        const err = new Error('Your account is deactivated')
         err.statusCode = 403
-        err.code = 'ACCOUNT_DISABLED'
+        err.code = 'ACCOUNT_INACTIVE'
         err.isActive = false
         throw err
     }
 
     // 3. Check email verification
     if (user.isVerified === false) {
-        const err = new Error('Your email address has not been verified yet. Please verify your email to continue.')
+        const err = new Error('Please verify your email before logging in')
         err.statusCode = 403
         err.code = 'EMAIL_NOT_VERIFIED'
         err.isUnverified = true
@@ -334,12 +342,12 @@ const login = async (userData) => {
     user.password = undefined
 
     return {
-        message: 'user successfully connected',
+        success: true,
+        message: 'User successfully connected',
         token,
         user
     }
 }
-
 
 module.exports = {
     registerUser,
