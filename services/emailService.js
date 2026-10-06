@@ -1,37 +1,71 @@
-const nodemailer = require('nodemailer')
+const { Resend } = require('resend')
 require('dotenv').config()
 
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: true,
-    family: 4,
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
-})
+let resendInstance = null
 
+/**
+ * Lazy initializer for Resend client to avoid crashing on boot if env vars are loaded dynamically
+ */
+const getResendClient = () => {
+    const apiKey = (process.env.RESEND_API_KEY || '').trim()
+    if (!apiKey) {
+        throw new Error('RESEND_API_KEY is not defined in environment variables')
+    }
+
+    if (!resendInstance) {
+        resendInstance = new Resend(apiKey)
+    }
+    return resendInstance
+}
+
+/**
+ * Sender identity for emails sent through Resend
+ * Defaults to 'El-Hudda <onboarding@resend.dev>' or custom verified domain via RESEND_FROM_EMAIL
+ */
+const getSenderEmail = () => {
+    const customSender = (process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || '').trim()
+    if (customSender) {
+        return customSender
+    }
+    return 'El-Hudda <onboarding@resend.dev>'
+}
+
+/**
+ * Resolves the production frontend URL safely, preventing localhost or Render backend in production
+ */
 const getFrontendUrl = () => {
-    const raw = (process.env.FRONTEND_URL || process.env.CLIENT_URL || '').trim().replace(/\/+$/, '')
-    if (raw && !raw.includes('localhost') && !raw.includes('127.0.0.1') && !raw.includes('onrender.com')) {
+    const raw = (process.env.FRONTEND_URL || process.env.CLIENT_URL || '')
+        .trim()
+        .replace(/\/+$/, '')
+
+    if (
+        raw &&
+        !raw.includes('localhost') &&
+        !raw.includes('127.0.0.1') &&
+        !raw.includes('onrender.com')
+    ) {
         return raw
     }
+
     return 'https://el-hudda.vercel.app'
 }
 
 /**
- * Send Arabic verification email with 15-minute token
+ * Send Arabic verification email with 15-minute token via Resend API
  */
 const sendVerificationEmail = async (email, token) => {
     const frontendUrl = getFrontendUrl()
     const verificationLink = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`
+    const fromAddress = getSenderEmail()
 
-    await transporter.sendMail({
-        from: `"الهدى للقرآن" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: 'تأكيد البريد الإلكتروني | مدرسة الهدى للقرآن الكريم',
-        html: `
+    try {
+        const client = getResendClient()
+
+        const { data, error } = await client.emails.send({
+            from: fromAddress,
+            to: [email],
+            subject: 'تأكيد البريد الإلكتروني | مدرسة الهدى للقرآن الكريم',
+            html: `
         <!DOCTYPE html>
         <html lang="ar" dir="rtl">
         <head>
@@ -160,21 +194,43 @@ const sendVerificationEmail = async (email, token) => {
         </body>
         </html>
         `
-    })
+        })
+
+        if (error) {
+            const errorMsg = error.message || 'Unknown Resend error'
+            const err = new Error(errorMsg)
+            err.code = 'EMAIL_SEND_FAILED'
+            err.statusCode = 500
+            throw err
+        }
+
+        return data
+    } catch (err) {
+        console.error(`Failed to send verification email: ${err.message}`)
+        if (!err.statusCode) {
+            err.statusCode = 500
+            err.code = 'EMAIL_SEND_FAILED'
+        }
+        throw err
+    }
 }
 
 /**
- * Send Arabic password reset email with 15-minute token
+ * Send Arabic password reset email with 15-minute token via Resend API
  */
 const sendResetPasswordEmail = async (email, token) => {
     const frontendUrl = getFrontendUrl()
     const resetLink = `${frontendUrl}/pages/auth/reset-password.html?token=${encodeURIComponent(token)}`
+    const fromAddress = getSenderEmail()
 
-    await transporter.sendMail({
-        from: `"الهدى للقرآن" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: 'إعادة تعيين كلمة المرور | مدرسة الهدى للقرآن الكريم',
-        html: `
+    try {
+        const client = getResendClient()
+
+        const { data, error } = await client.emails.send({
+            from: fromAddress,
+            to: [email],
+            subject: 'إعادة تعيين كلمة المرور | مدرسة الهدى للقرآن الكريم',
+            html: `
         <!DOCTYPE html>
         <html lang="ar" dir="rtl">
         <head>
@@ -248,6 +304,14 @@ const sendResetPasswordEmail = async (email, token) => {
                     color: #991b1b;
                     margin-bottom: 24px;
                 }
+                .fallback {
+                    font-size: 12px;
+                    color: #64748b;
+                    word-break: break-all;
+                    margin-top: 20px;
+                    border-top: 1px dashed #cbd5e1;
+                    padding-top: 16px;
+                }
                 .footer {
                     background-color: #f1f5f9;
                     padding: 20px;
@@ -277,6 +341,10 @@ const sendResetPasswordEmail = async (email, token) => {
                     <p class="text" style="font-size: 13px; color: #64748b;">
                         إذا لم تكن قد طلبت إعادة تعيين كلمة المرور، يرجى تجاهل هذه الرسالة، فستبقى كلمة المرور الحالية آمنة كما هي.
                     </p>
+                    <div class="fallback">
+                        إذا واجهت مشكلة في الضغط على الزر، يمكنك نسخ الرابط التالي ولصقه في المتصفح:<br>
+                        <a href="${resetLink}" style="color: #059669;">${resetLink}</a>
+                    </div>
                 </div>
                 <div class="footer">
                     © 2026 مدرسة الهدى للقرآن الكريم — جميع الحقوق محفوظة
@@ -285,11 +353,31 @@ const sendResetPasswordEmail = async (email, token) => {
         </body>
         </html>
         `
-    })
+        })
+
+        if (error) {
+            const errorMsg = error.message || 'Unknown Resend error'
+            const err = new Error(errorMsg)
+            err.code = 'EMAIL_SEND_FAILED'
+            err.statusCode = 500
+            throw err
+        }
+
+        return data
+    } catch (err) {
+        console.error(`Failed to send reset password email: ${err.message}`)
+        if (!err.statusCode) {
+            err.statusCode = 500
+            err.code = 'EMAIL_SEND_FAILED'
+        }
+        throw err
+    }
 }
 
 module.exports = {
     sendVerificationEmail,
     sendResetPasswordEmail,
-    transporter
+    getFrontendUrl,
+    getSenderEmail,
+    transporter: null
 }

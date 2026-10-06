@@ -43,10 +43,18 @@ const registerUser = async (userData) => {
 
     const isExist = await userModel.findOne({ email: normalizedEmail })
     if (isExist) {
-        const err = new Error('User already exists')
-        err.statusCode = 400
-        err.code = 'EMAIL_ALREADY_EXISTS'
-        throw err
+        if (isExist.isVerified) {
+            const err = new Error('User already exists')
+            err.statusCode = 400
+            err.code = 'EMAIL_ALREADY_EXISTS'
+            throw err
+        }
+        // If an unverified user exists from an earlier failed attempt, remove it so registration can proceed cleanly
+        try {
+            await userModel.findByIdAndDelete(isExist._id)
+        } catch (cleanupErr) {
+            console.error('Failed to clean up stale unverified user:', cleanupErr.message || cleanupErr)
+        }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10)
@@ -72,7 +80,16 @@ const registerUser = async (userData) => {
     try {
         await sendVerificationEmail(normalizedEmail, token)
     } catch (mailErr) {
-        console.error('Failed to send verification email upon registration:', mailErr)
+        // Rollback user creation to prevent orphaned unverified accounts that cannot be activated
+        try {
+            await userModel.findByIdAndDelete(user._id)
+        } catch (cleanupErr) {
+            console.error('Failed to rollback user creation after email failure:', cleanupErr.message || cleanupErr)
+        }
+        const err = new Error('فشل إرسال بريد التفعيل، يرجى المحاولة مرة أخرى لاحقاً')
+        err.statusCode = 500
+        err.code = 'EMAIL_SEND_FAILED'
+        throw err
     }
 
     return {
@@ -160,7 +177,10 @@ const forgotPassword = async (email) => {
     try {
         await sendResetPasswordEmail(normalizedEmail, token)
     } catch (mailErr) {
-        console.error('Failed to send reset password email:', mailErr)
+        const err = new Error('فشل إرسال بريد إعادة تعيين كلمة المرور، يرجى المحاولة لاحقاً')
+        err.statusCode = 500
+        err.code = 'EMAIL_SEND_FAILED'
+        throw err
     }
 
     return {
@@ -270,7 +290,11 @@ const resendVerification = async (email) => {
     try {
         await sendVerificationEmail(normalizedEmail, token)
     } catch (emailErr) {
-        console.error('Failed to send verification email:', emailErr)
+        resendRateLimitMap.delete(normalizedEmail)
+        const err = new Error('فشل إرسال بريد التفعيل، يرجى المحاولة مرة أخرى لاحقاً')
+        err.statusCode = 500
+        err.code = 'EMAIL_SEND_FAILED'
+        throw err
     }
 
     return {
