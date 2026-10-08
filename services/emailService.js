@@ -1,33 +1,49 @@
-const { Resend } = require('resend')
+const { google } = require('googleapis')
 require('dotenv').config()
 
-let resendInstance = null
+let gmailClientInstance = null
 
 /**
- * Lazy initializer for Resend client to avoid crashing on boot if env vars are loaded dynamically
+ * Lazy initializer for Gmail API client via OAuth 2.0
  */
-const getResendClient = () => {
-    const apiKey = (process.env.RESEND_API_KEY || '').trim()
-    if (!apiKey) {
-        throw new Error('RESEND_API_KEY is not defined in environment variables')
+const getGmailClient = () => {
+    const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim()
+    const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim()
+    const refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim()
+
+    if (!clientId || !clientSecret || !refreshToken) {
+        throw new Error('Google OAuth credentials (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN) are missing in environment variables')
     }
 
-    if (!resendInstance) {
-        resendInstance = new Resend(apiKey)
+    if (!gmailClientInstance) {
+        const oauth2Client = new google.auth.OAuth2(clientId, clientSecret)
+        oauth2Client.setCredentials({
+            refresh_token: refreshToken
+        })
+
+        gmailClientInstance = google.gmail({
+            version: 'v1',
+            auth: oauth2Client
+        })
     }
-    return resendInstance
+
+    return gmailClientInstance
 }
 
 /**
- * Sender identity for emails sent through Resend
- * Defaults to 'El-Hudda <onboarding@resend.dev>' or custom verified domain via RESEND_FROM_EMAIL
+ * Sender identity for emails sent through Gmail API
  */
 const getSenderEmail = () => {
-    const customSender = (process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || '').trim()
-    if (customSender) {
-        return customSender
+    const email = (process.env.GOOGLE_SENDER_EMAIL || '').trim()
+    if (!email) {
+        throw new Error('GOOGLE_SENDER_EMAIL is not defined in environment variables')
     }
-    return 'El-Hudda <onboarding@resend.dev>'
+
+    if (email.includes('<') && email.includes('>')) {
+        return email
+    }
+
+    return `مدرسة الهدى للقرآن الكريم <${email}>`
 }
 
 /**
@@ -51,21 +67,79 @@ const getFrontendUrl = () => {
 }
 
 /**
- * Send Arabic verification email with 15-minute token via Resend API
+ * Creates an RFC 2822 compliant email message and encodes it to base64url for Gmail API
+ * Supports UTF-8 Arabic text in headers and HTML body
  */
-const sendVerificationEmail = async (email, token) => {
+const createRawEmail = ({ from, to, subject, html }) => {
+    const cleanFrom = (from || '').trim()
+    let formattedFrom = cleanFrom
+    const match = cleanFrom.match(/^(.*?)\s*<(.+?)>$/)
+    if (match) {
+        const displayName = match[1].replace(/^["']|["']$/g, '').trim()
+        const emailAddress = match[2].trim()
+        if (displayName) {
+            formattedFrom = `=?UTF-8?B?${Buffer.from(displayName, 'utf-8').toString('base64')}?= <${emailAddress}>`
+        }
+    }
+
+    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, 'utf-8').toString('base64')}?=`
+
+    const utf8HtmlBase64 = Buffer.from(html, 'utf-8')
+        .toString('base64')
+        .replace(/(.{76})/g, '$1\r\n')
+
+    const messageParts = [
+        `From: ${formattedFrom}`,
+        `To: ${to}`,
+        `Subject: ${encodedSubject}`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        utf8HtmlBase64
+    ]
+
+    const rawMessage = messageParts.join('\r\n')
+
+    return Buffer.from(rawMessage, 'utf-8')
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '')
+}
+
+/**
+ * Sends an email via Gmail API HTTP request using OAuth 2.0
+ */
+const sendMailViaGmail = async ({ to, subject, html }) => {
+    const gmail = getGmailClient()
+    const from = getSenderEmail()
+    const raw = createRawEmail({ from, to, subject, html })
+
+    const response = await gmail.users.messages.send({
+        userId: 'me',
+        requestBody: {
+            raw
+        }
+    })
+
+    return response.data
+}
+
+/**
+ * Send Arabic verification email with 15-minute token via Gmail API
+ */
+const sendVerificationEmail = async (email, token, userName = '') => {
     const frontendUrl = getFrontendUrl()
-    const verificationLink = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`
-    const fromAddress = getSenderEmail()
+    const encodedEmail = encodeURIComponent(email)
+    const encodedToken = encodeURIComponent(token)
+    const verificationLink = `${frontendUrl}/pages/auth/verify-email.html?token=${encodedToken}&email=${encodedEmail}`
 
-    try {
-        const client = getResendClient()
+    const greetingText = userName && userName.trim()
+        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${userName.trim()}</strong>،`
+        : 'السلام عليكم ورحمة الله وبركاته،'
 
-        const { data, error } = await client.emails.send({
-            from: fromAddress,
-            to: [email],
-            subject: 'تأكيد البريد الإلكتروني | مدرسة الهدى للقرآن الكريم',
-            html: `
+    const html = `
         <!DOCTYPE html>
         <html lang="ar" dir="rtl">
         <head>
@@ -165,11 +239,11 @@ const sendVerificationEmail = async (email, token) => {
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>مدرسة الهدى للقرآن الكريم</h1>
+                    <h1>مدرسة الهدى للقرآن الكريم (El-Hudda)</h1>
                     <p>المسجد العامر — نظام إدارة المدرسة القرآنية</p>
                 </div>
                 <div class="body">
-                    <div class="greeting">السلام عليكم ورحمة الله وبركاته،</div>
+                    <div class="greeting">${greetingText}</div>
                     <p class="text">
                         أهلاً ومرحباً بك في مدرسة الهدى للقرآن الكريم. لقد تم إنشاء حساب جديد مرتبط بهذا البريد الإلكتروني. لتأكيد حسابك وتفعيله، يرجى الضغط على الزر أدناه:
                     </p>
@@ -188,49 +262,38 @@ const sendVerificationEmail = async (email, token) => {
                     </div>
                 </div>
                 <div class="footer">
-                    © 2026 مدرسة الهدى للقرآن الكريم — جميع الحقوق محفوظة
+                    © 2026 مدرسة الهدى للقرآن الكريم (El-Hudda) — جميع الحقوق محفوظة
                 </div>
             </div>
         </body>
         </html>
-        `
+    `
+
+    try {
+        const result = await sendMailViaGmail({
+            to: email,
+            subject: 'تأكيد البريد الإلكتروني | مدرسة الهدى للقرآن الكريم',
+            html
         })
-
-        if (error) {
-            const errorMsg = error.message || 'Unknown Resend error'
-            const err = new Error(errorMsg)
-            err.code = 'EMAIL_SEND_FAILED'
-            err.statusCode = 500
-            throw err
-        }
-
-        return data
+        return result
     } catch (err) {
-        console.error(`Failed to send verification email: ${err.message}`)
-        if (!err.statusCode) {
-            err.statusCode = 500
-            err.code = 'EMAIL_SEND_FAILED'
-        }
-        throw err
+        console.error(`Failed to send verification email via Gmail API: ${err.message || 'Unknown error'}`)
+        const error = new Error('Failed to send verification email')
+        error.code = 'EMAIL_SEND_FAILED'
+        error.statusCode = 500
+        throw error
     }
 }
 
 /**
- * Send Arabic password reset email with 15-minute token via Resend API
+ * Send Arabic password reset email with 15-minute token via Gmail API
  */
 const sendResetPasswordEmail = async (email, token) => {
     const frontendUrl = getFrontendUrl()
-    const resetLink = `${frontendUrl}/pages/auth/reset-password.html?token=${encodeURIComponent(token)}`
-    const fromAddress = getSenderEmail()
+    const encodedToken = encodeURIComponent(token)
+    const resetLink = `${frontendUrl}/pages/auth/reset-password.html?token=${encodedToken}`
 
-    try {
-        const client = getResendClient()
-
-        const { data, error } = await client.emails.send({
-            from: fromAddress,
-            to: [email],
-            subject: 'إعادة تعيين كلمة المرور | مدرسة الهدى للقرآن الكريم',
-            html: `
+    const html = `
         <!DOCTYPE html>
         <html lang="ar" dir="rtl">
         <head>
@@ -325,7 +388,7 @@ const sendResetPasswordEmail = async (email, token) => {
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>مدرسة الهدى للقرآن الكريم</h1>
+                    <h1>مدرسة الهدى للقرآن الكريم (El-Hudda)</h1>
                 </div>
                 <div class="body">
                     <div class="greeting">السلام عليكم ورحمة الله وبركاته،</div>
@@ -347,37 +410,34 @@ const sendResetPasswordEmail = async (email, token) => {
                     </div>
                 </div>
                 <div class="footer">
-                    © 2026 مدرسة الهدى للقرآن الكريم — جميع الحقوق محفوظة
+                    © 2026 مدرسة الهدى للقرآن الكريم (El-Hudda) — جميع الحقوق محفوظة
                 </div>
             </div>
         </body>
         </html>
-        `
+    `
+
+    try {
+        const result = await sendMailViaGmail({
+            to: email,
+            subject: 'إعادة تعيين كلمة المرور | مدرسة الهدى للقرآن الكريم',
+            html
         })
-
-        if (error) {
-            const errorMsg = error.message || 'Unknown Resend error'
-            const err = new Error(errorMsg)
-            err.code = 'EMAIL_SEND_FAILED'
-            err.statusCode = 500
-            throw err
-        }
-
-        return data
+        return result
     } catch (err) {
-        console.error(`Failed to send reset password email: ${err.message}`)
-        if (!err.statusCode) {
-            err.statusCode = 500
-            err.code = 'EMAIL_SEND_FAILED'
-        }
-        throw err
+        console.error(`Failed to send reset password email via Gmail API: ${err.message || 'Unknown error'}`)
+        const error = new Error('Failed to send reset password email')
+        error.code = 'EMAIL_SEND_FAILED'
+        error.statusCode = 500
+        throw error
     }
 }
 
 module.exports = {
     sendVerificationEmail,
     sendResetPasswordEmail,
+    createRawEmail,
     getFrontendUrl,
     getSenderEmail,
-    transporter: null
+    getGmailClient
 }

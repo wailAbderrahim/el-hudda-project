@@ -78,7 +78,7 @@ const registerUser = async (userData) => {
     })
 
     try {
-        await sendVerificationEmail(normalizedEmail, token)
+        await sendVerificationEmail(normalizedEmail, token, user.name)
     } catch (mailErr) {
         // Rollback user creation to prevent orphaned unverified accounts that cannot be activated
         try {
@@ -288,7 +288,8 @@ const resendVerification = async (email) => {
 
     // Send new verification email
     try {
-        await sendVerificationEmail(normalizedEmail, token)
+        const userName = user.name || (user.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : '')
+        await sendVerificationEmail(normalizedEmail, token, userName)
     } catch (emailErr) {
         resendRateLimitMap.delete(normalizedEmail)
         const err = new Error('فشل إرسال بريد التفعيل، يرجى المحاولة مرة أخرى لاحقاً')
