@@ -26,7 +26,7 @@ const verifyEmail = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 code: 'TOKEN_REQUIRED',
-                message: 'Verification token is required'
+                message: 'رمز التحقق مطلوب'
             })
         }
 
@@ -66,6 +66,7 @@ const login = async (req, res) => {
             code: err.code || 'INVALID_CREDENTIALS',
             message: err.message,
             isUnverified: Boolean(err.isUnverified),
+            email: err.email || undefined,
             isActive: err.isActive !== undefined ? err.isActive : null
         })
     }
@@ -79,7 +80,7 @@ const resendVerification = async (req, res) => {
             return res.status(400).json({
                 success: false,
                 code: 'INVALID_INPUT',
-                message: 'Email is required'
+                message: 'البريد الإلكتروني مطلوب'
             })
         }
 

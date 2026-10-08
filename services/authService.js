@@ -1,7 +1,7 @@
 const userModel = require('../models/userModel')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
-const { sendVerificationEmail, sendResetPasswordEmail } = require('./emailService')
+const { sendVerificationEmail, sendResetPasswordEmail, getFrontendUrl } = require('./emailService')
 const crypto = require('crypto')
 
 const registerUser = async (userData) => {
@@ -26,14 +26,14 @@ const registerUser = async (userData) => {
         !email || !email.trim() ||
         !password
     ) {
-        const err = new Error('All fields are required')
+        const err = new Error('جميع الحقول مطلوبة')
         err.statusCode = 400
         err.code = 'INVALID_INPUT'
         throw err
     }
 
     if (password.length < 8) {
-        const err = new Error('Password must be at least 8 characters')
+        const err = new Error('يجب أن تكون كلمة المرور 8 أحرف على الأقل')
         err.statusCode = 400
         err.code = 'PASSWORD_TOO_SHORT'
         throw err
@@ -44,7 +44,7 @@ const registerUser = async (userData) => {
     const isExist = await userModel.findOne({ email: normalizedEmail })
     if (isExist) {
         if (isExist.isVerified) {
-            const err = new Error('User already exists')
+            const err = new Error('هذا البريد الإلكتروني مسجل مسبقاً')
             err.statusCode = 400
             err.code = 'EMAIL_ALREADY_EXISTS'
             throw err
@@ -60,11 +60,12 @@ const registerUser = async (userData) => {
     const hashedPassword = await bcrypt.hash(password, 10)
     const token = crypto.randomBytes(32).toString('hex')
     const tokenExpires = new Date(Date.now() + 15 * 60 * 1000)
+    const userName = (userData.name && userData.name.trim()) || `${firstName.trim()} ${lastName.trim()}`
 
     const user = await userModel.create({
         firstName: firstName.trim(),
         lastName: lastName.trim(),
-        name: (userData.name && userData.name.trim()) || `${firstName.trim()} ${lastName.trim()}`,
+        name: userName,
         phone: phone.trim(),
         placeOfBirth: placeOfBirth.trim(),
         municipalityOfBirth: municipalityOfBirth.trim(),
@@ -77,8 +78,11 @@ const registerUser = async (userData) => {
         verificationTokenExpires: tokenExpires
     })
 
+    const frontendUrl = getFrontendUrl()
+    const verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`
+
     try {
-        await sendVerificationEmail(normalizedEmail, token, user.name)
+        await sendVerificationEmail(normalizedEmail, userName, verificationUrl)
     } catch (mailErr) {
         // Rollback user creation to prevent orphaned unverified accounts that cannot be activated
         try {
@@ -94,7 +98,7 @@ const registerUser = async (userData) => {
 
     return {
         success: true,
-        message: 'User created successfully',
+        message: 'تم إنشاء الحساب بنجاح، يرجى تفقد بريدك الإلكتروني لتأكيد الحساب',
         data: {
             id: user._id,
             email: normalizedEmail,
@@ -105,14 +109,14 @@ const registerUser = async (userData) => {
 
 const resetPassword = async (token, newPassword) => {
     if (!token || !token.trim()) {
-        const err = new Error('Reset token is required')
+        const err = new Error('رمز استعادة كلمة المرور مطلوب')
         err.statusCode = 400
         err.code = 'TOKEN_REQUIRED'
         throw err
     }
 
     if (!newPassword || newPassword.length < 8) {
-        const err = new Error('Password must be at least 8 characters')
+        const err = new Error('يجب أن تكون كلمة المرور الجديدة 8 أحرف على الأقل')
         err.statusCode = 400
         err.code = 'PASSWORD_TOO_SHORT'
         throw err
@@ -123,14 +127,14 @@ const resetPassword = async (token, newPassword) => {
     })
 
     if (!user) {
-        const err = new Error('Invalid reset token')
+        const err = new Error('رمز الاستعادة غير صالح')
         err.statusCode = 400
         err.code = 'INVALID_TOKEN'
         throw err
     }
 
     if (user.resetPasswordTokenExpires < new Date()) {
-        const err = new Error('Reset password token has expired')
+        const err = new Error('انتهت صلاحية رمز استعادة كلمة المرور')
         err.statusCode = 400
         err.code = 'TOKEN_EXPIRED'
         throw err
@@ -144,13 +148,13 @@ const resetPassword = async (token, newPassword) => {
 
     return {
         success: true,
-        message: 'Password reset successfully'
+        message: 'تمت إعادة تعيين كلمة المرور بنجاح'
     }
 }
 
 const forgotPassword = async (email) => {
     if (!email || !email.trim()) {
-        const err = new Error('Email is required')
+        const err = new Error('البريد الإلكتروني مطلوب')
         err.statusCode = 400
         err.code = 'INVALID_INPUT'
         throw err
@@ -163,7 +167,7 @@ const forgotPassword = async (email) => {
     if (!user) {
         return {
             success: true,
-            message: 'If the email exists, a password reset link has been sent'
+            message: 'إذا كان البريد الإلكتروني مسجلاً، فقد تم إرسال رابط إعادة تعيين كلمة المرور'
         }
     }
 
@@ -174,8 +178,11 @@ const forgotPassword = async (email) => {
     user.resetPasswordTokenExpires = tokenExpires
     await user.save()
 
+    const frontendUrl = getFrontendUrl()
+    const resetUrl = `${frontendUrl}/pages/auth/reset-password.html?token=${encodeURIComponent(token)}`
+
     try {
-        await sendResetPasswordEmail(normalizedEmail, token)
+        await sendResetPasswordEmail(normalizedEmail, resetUrl, user.name)
     } catch (mailErr) {
         const err = new Error('فشل إرسال بريد إعادة تعيين كلمة المرور، يرجى المحاولة لاحقاً')
         err.statusCode = 500
@@ -185,13 +192,13 @@ const forgotPassword = async (email) => {
 
     return {
         success: true,
-        message: 'Password reset email sent'
+        message: 'تم إرسال بريد إعادة تعيين كلمة المرور بنجاح'
     }
 }
 
 const verifyEmail = async (token) => {
     if (!token || !token.trim()) {
-        const err = new Error('Verification token is required')
+        const err = new Error('رمز التحقق مطلوب')
         err.statusCode = 400
         err.code = 'TOKEN_REQUIRED'
         throw err
@@ -202,14 +209,14 @@ const verifyEmail = async (token) => {
     })
 
     if (!user) {
-        const err = new Error('Invalid verification token')
+        const err = new Error('رمز التحقق غير صالح أو تم استخدامه مسبقاً')
         err.statusCode = 400
         err.code = 'INVALID_VERIFICATION_TOKEN'
         throw err
     }
 
     if (user.verificationTokenExpires < new Date()) {
-        const err = new Error('Verification token has expired')
+        const err = new Error('انتهت صلاحية رمز التحقق (صلاحية الرابط 15 دقيقة فقط)')
         err.statusCode = 400
         err.code = 'VERIFICATION_TOKEN_EXPIRED'
         throw err
@@ -222,7 +229,7 @@ const verifyEmail = async (token) => {
 
     return {
         success: true,
-        message: 'Email verified successfully',
+        message: 'تم تأكيد البريد الإلكتروني بنجاح',
         data: {
             email: user.email,
             isVerified: true
@@ -234,7 +241,7 @@ const resendRateLimitMap = new Map()
 
 const resendVerification = async (email) => {
     if (!email || !email.trim()) {
-        const err = new Error('Email is required')
+        const err = new Error('البريد الإلكتروني مطلوب')
         err.statusCode = 400
         err.code = 'INVALID_INPUT'
         throw err
@@ -286,10 +293,13 @@ const resendVerification = async (email) => {
     // Update rate limit timestamp
     resendRateLimitMap.set(normalizedEmail, now)
 
-    // Send new verification email
+    const frontendUrl = getFrontendUrl()
+    const verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`
+    const userName = user.name || (user.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : '')
+
+    // Send new verification email via Brevo API
     try {
-        const userName = user.name || (user.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : '')
-        await sendVerificationEmail(normalizedEmail, token, userName)
+        await sendVerificationEmail(normalizedEmail, userName, verificationUrl)
     } catch (emailErr) {
         resendRateLimitMap.delete(normalizedEmail)
         const err = new Error('فشل إرسال بريد التفعيل، يرجى المحاولة مرة أخرى لاحقاً')
@@ -308,7 +318,7 @@ const login = async (userData) => {
     const { email, password } = userData
 
     if (!email || !email.trim() || !password) {
-        const err = new Error('Email and password are required')
+        const err = new Error('البريد الإلكتروني وكلمة المرور مطلوبان')
         err.statusCode = 400
         err.code = 'INVALID_INPUT'
         throw err
@@ -319,7 +329,7 @@ const login = async (userData) => {
 
     // 1. Check credentials
     if (!user) {
-        const err = new Error('Invalid email or password')
+        const err = new Error('بيانات الدخول غير صحيحة')
         err.statusCode = 400
         err.code = 'INVALID_CREDENTIALS'
         throw err
@@ -327,7 +337,7 @@ const login = async (userData) => {
 
     const isMatch = await bcrypt.compare(password, user.password)
     if (!isMatch) {
-        const err = new Error('Invalid email or password')
+        const err = new Error('بيانات الدخول غير صحيحة')
         err.statusCode = 400
         err.code = 'INVALID_CREDENTIALS'
         throw err
@@ -335,7 +345,7 @@ const login = async (userData) => {
 
     // 2. Check account active status
     if (user.isActive === false) {
-        const err = new Error('Your account is deactivated')
+        const err = new Error('الحساب معطل حالياً')
         err.statusCode = 403
         err.code = 'ACCOUNT_INACTIVE'
         err.isActive = false
@@ -344,10 +354,11 @@ const login = async (userData) => {
 
     // 3. Check email verification
     if (user.isVerified === false) {
-        const err = new Error('Please verify your email before logging in')
+        const err = new Error('يرجى تأكيد بريدك الإلكتروني قبل تسجيل الدخول. يمكنك استخدام صفحة تأكيد البريد لإعادة إرسال الرابط.')
         err.statusCode = 403
         err.code = 'EMAIL_NOT_VERIFIED'
         err.isUnverified = true
+        err.email = normalizedEmail
         throw err
     }
 
@@ -368,7 +379,7 @@ const login = async (userData) => {
 
     return {
         success: true,
-        message: 'User successfully connected',
+        message: 'تم تسجيل الدخول بنجاح',
         token,
         user
     }

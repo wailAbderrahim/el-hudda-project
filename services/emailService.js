@@ -1,65 +1,14 @@
-const { google } = require('googleapis')
 require('dotenv').config()
 
-let gmailClientInstance = null
-
 /**
- * Lazy initializer for Gmail API client via OAuth 2.0
- */
-const getGmailClient = () => {
-    const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim()
-    const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim()
-    const refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim()
-
-    if (!clientId || !clientSecret || !refreshToken) {
-        throw new Error('Google OAuth credentials (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN) are missing in environment variables')
-    }
-
-    if (!gmailClientInstance) {
-        const oauth2Client = new google.auth.OAuth2(clientId, clientSecret)
-        oauth2Client.setCredentials({
-            refresh_token: refreshToken
-        })
-
-        gmailClientInstance = google.gmail({
-            version: 'v1',
-            auth: oauth2Client
-        })
-    }
-
-    return gmailClientInstance
-}
-
-/**
- * Sender identity for emails sent through Gmail API
- */
-const getSenderEmail = () => {
-    const email = (process.env.GOOGLE_SENDER_EMAIL || '').trim()
-    if (!email) {
-        throw new Error('GOOGLE_SENDER_EMAIL is not defined in environment variables')
-    }
-
-    if (email.includes('<') && email.includes('>')) {
-        return email
-    }
-
-    return `مدرسة الهدى للقرآن الكريم <${email}>`
-}
-
-/**
- * Resolves the production frontend URL safely, preventing localhost or Render backend in production
+ * Resolves the frontend URL from environment variables
  */
 const getFrontendUrl = () => {
     const raw = (process.env.FRONTEND_URL || process.env.CLIENT_URL || '')
         .trim()
         .replace(/\/+$/, '')
 
-    if (
-        raw &&
-        !raw.includes('localhost') &&
-        !raw.includes('127.0.0.1') &&
-        !raw.includes('onrender.com')
-    ) {
+    if (raw) {
         return raw
     }
 
@@ -67,79 +16,104 @@ const getFrontendUrl = () => {
 }
 
 /**
- * Creates an RFC 2822 compliant email message and encodes it to base64url for Gmail API
- * Supports UTF-8 Arabic text in headers and HTML body
+ * Sends a transactional email via Brevo HTTP API
+ * POST https://api.brevo.com/v3/smtp/email
  */
-const createRawEmail = ({ from, to, subject, html }) => {
-    const cleanFrom = (from || '').trim()
-    let formattedFrom = cleanFrom
-    const match = cleanFrom.match(/^(.*?)\s*<(.+?)>$/)
-    if (match) {
-        const displayName = match[1].replace(/^["']|["']$/g, '').trim()
-        const emailAddress = match[2].trim()
-        if (displayName) {
-            formattedFrom = `=?UTF-8?B?${Buffer.from(displayName, 'utf-8').toString('base64')}?= <${emailAddress}>`
-        }
+const sendBrevoEmail = async ({ toEmail, toName, subject, htmlContent }) => {
+    const apiKey = (process.env.BREVO_API_KEY || '').trim()
+    const senderEmail = (process.env.BREVO_SENDER_EMAIL || '').trim()
+    const senderName = (process.env.BREVO_SENDER_NAME || 'الهدى للقرآن').trim()
+
+    if (!apiKey) {
+        console.error('Brevo configuration error: BREVO_API_KEY is missing in environment variables')
+        const err = new Error('إعدادات إرسال البريد غير مكتملة في الخادم')
+        err.code = 'EMAIL_SEND_FAILED'
+        err.statusCode = 500
+        throw err
     }
 
-    const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, 'utf-8').toString('base64')}?=`
+    if (!senderEmail) {
+        console.error('Brevo configuration error: BREVO_SENDER_EMAIL is missing in environment variables')
+        const err = new Error('إعدادات إرسال البريد غير مكتملة في الخادم')
+        err.code = 'EMAIL_SEND_FAILED'
+        err.statusCode = 500
+        throw err
+    }
 
-    const utf8HtmlBase64 = Buffer.from(html, 'utf-8')
-        .toString('base64')
-        .replace(/(.{76})/g, '$1\r\n')
+    const recipient = { email: toEmail.trim() }
+    if (toName && toName.trim()) {
+        recipient.name = toName.trim()
+    }
 
-    const messageParts = [
-        `From: ${formattedFrom}`,
-        `To: ${to}`,
-        `Subject: ${encodedSubject}`,
-        'MIME-Version: 1.0',
-        'Content-Type: text/html; charset=UTF-8',
-        'Content-Transfer-Encoding: base64',
-        '',
-        utf8HtmlBase64
-    ]
+    const payload = {
+        sender: {
+            name: senderName,
+            email: senderEmail
+        },
+        to: [recipient],
+        subject: subject,
+        htmlContent: htmlContent
+    }
 
-    const rawMessage = messageParts.join('\r\n')
+    try {
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: {
+                'accept': 'application/json',
+                'api-key': apiKey,
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        })
 
-    return Buffer.from(rawMessage, 'utf-8')
-        .toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '')
-}
+        const data = await response.json().catch(() => ({}))
 
-/**
- * Sends an email via Gmail API HTTP request using OAuth 2.0
- */
-const sendMailViaGmail = async ({ to, subject, html }) => {
-    const gmail = getGmailClient()
-    const from = getSenderEmail()
-    const raw = createRawEmail({ from, to, subject, html })
-
-    const response = await gmail.users.messages.send({
-        userId: 'me',
-        requestBody: {
-            raw
+        if (!response.ok) {
+            const errorDetail = data.message || `Status ${response.status}`
+            console.error(`Failed to send email via Brevo API: ${errorDetail}`)
+            const err = new Error('فشل إرسال البريد الإلكتروني')
+            err.code = 'EMAIL_SEND_FAILED'
+            err.statusCode = 500
+            throw err
         }
-    })
 
-    return response.data
+        return data
+    } catch (err) {
+        if (!err.code) {
+            console.error(`Brevo API network/request failure: ${err.message || err}`)
+            err.code = 'EMAIL_SEND_FAILED'
+            err.statusCode = 500
+            err.message = 'فشل إرسال البريد الإلكتروني'
+        }
+        throw err
+    }
 }
 
 /**
- * Send Arabic verification email with 15-minute token via Gmail API
+ * Send Arabic verification email with 15-minute token via Brevo API
+ * Supports both signatures:
+ *   sendVerificationEmail(email, name, verificationUrl)
+ *   sendVerificationEmail(email, token, name)
  */
-const sendVerificationEmail = async (email, token, userName = '') => {
-    const frontendUrl = getFrontendUrl()
-    const encodedEmail = encodeURIComponent(email)
-    const encodedToken = encodeURIComponent(token)
-    const verificationLink = `${frontendUrl}/pages/auth/verify-email.html?token=${encodedToken}&email=${encodedEmail}`
+const sendVerificationEmail = async (email, nameOrToken, urlOrName) => {
+    let recipientName = ''
+    let verificationUrl = ''
 
-    const greetingText = userName && userName.trim()
-        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${userName.trim()}</strong>،`
+    if (typeof urlOrName === 'string' && (urlOrName.startsWith('http://') || urlOrName.startsWith('https://'))) {
+        recipientName = nameOrToken || ''
+        verificationUrl = urlOrName
+    } else {
+        const token = nameOrToken
+        recipientName = urlOrName || ''
+        const frontendUrl = getFrontendUrl()
+        verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`
+    }
+
+    const greeting = recipientName && recipientName.trim()
+        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${recipientName.trim()}</strong>،`
         : 'السلام عليكم ورحمة الله وبركاته،'
 
-    const html = `
+    const htmlContent = `
         <!DOCTYPE html>
         <html lang="ar" dir="rtl">
         <head>
@@ -239,16 +213,16 @@ const sendVerificationEmail = async (email, token, userName = '') => {
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>مدرسة الهدى للقرآن الكريم (El-Hudda)</h1>
+                    <h1>مدرسة الهدى للقرآن الكريم</h1>
                     <p>المسجد العامر — نظام إدارة المدرسة القرآنية</p>
                 </div>
                 <div class="body">
-                    <div class="greeting">${greetingText}</div>
+                    <div class="greeting">${greeting}</div>
                     <p class="text">
                         أهلاً ومرحباً بك في مدرسة الهدى للقرآن الكريم. لقد تم إنشاء حساب جديد مرتبط بهذا البريد الإلكتروني. لتأكيد حسابك وتفعيله، يرجى الضغط على الزر أدناه:
                     </p>
                     <div class="btn-container">
-                        <a href="${verificationLink}" class="btn" target="_blank">تأكيد البريد الإلكتروني</a>
+                        <a href="${verificationUrl}" class="btn" target="_blank">تأكيد البريد الإلكتروني</a>
                     </div>
                     <div class="notice">
                         ⏱️ <strong>ملاحظة:</strong> صلاحية هذا الرابط هي <strong>15 دقيقة</strong> فقط من وقت استلام هذه الرسالة.
@@ -258,42 +232,43 @@ const sendVerificationEmail = async (email, token, userName = '') => {
                     </p>
                     <div class="fallback">
                         إذا واجهت مشكلة في الضغط على الزر، يمكنك نسخ الرابط التالي ولصقه في المتصفح:<br>
-                        <a href="${verificationLink}" style="color: #059669;">${verificationLink}</a>
+                        <a href="${verificationUrl}" style="color: #059669;">${verificationUrl}</a>
                     </div>
                 </div>
                 <div class="footer">
-                    © 2026 مدرسة الهدى للقرآن الكريم (El-Hudda) — جميع الحقوق محفوظة
+                    © 2026 مدرسة الهدى للقرآن الكريم — جميع الحقوق محفوظة
                 </div>
             </div>
         </body>
         </html>
     `
 
-    try {
-        const result = await sendMailViaGmail({
-            to: email,
-            subject: 'تأكيد البريد الإلكتروني | مدرسة الهدى للقرآن الكريم',
-            html
-        })
-        return result
-    } catch (err) {
-        console.error(`Failed to send verification email via Gmail API: ${err.message || 'Unknown error'}`)
-        const error = new Error('Failed to send verification email')
-        error.code = 'EMAIL_SEND_FAILED'
-        error.statusCode = 500
-        throw error
-    }
+    return await sendBrevoEmail({
+        toEmail: email,
+        toName: recipientName,
+        subject: 'تأكيد البريد الإلكتروني - الهدى للقرآن',
+        htmlContent
+    })
 }
 
 /**
- * Send Arabic password reset email with 15-minute token via Gmail API
+ * Send Arabic password reset email with 15-minute token via Brevo API
+ * Supports: sendResetPasswordEmail(email, tokenOrUrl, recipientName)
  */
-const sendResetPasswordEmail = async (email, token) => {
-    const frontendUrl = getFrontendUrl()
-    const encodedToken = encodeURIComponent(token)
-    const resetLink = `${frontendUrl}/pages/auth/reset-password.html?token=${encodedToken}`
+const sendResetPasswordEmail = async (email, tokenOrUrl, recipientName = '') => {
+    let resetUrl = ''
+    if (typeof tokenOrUrl === 'string' && (tokenOrUrl.startsWith('http://') || tokenOrUrl.startsWith('https://'))) {
+        resetUrl = tokenOrUrl
+    } else {
+        const frontendUrl = getFrontendUrl()
+        resetUrl = `${frontendUrl}/pages/auth/reset-password.html?token=${encodeURIComponent(tokenOrUrl)}`
+    }
 
-    const html = `
+    const greeting = recipientName && recipientName.trim()
+        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${recipientName.trim()}</strong>،`
+        : 'السلام عليكم ورحمة الله وبركاته،'
+
+    const htmlContent = `
         <!DOCTYPE html>
         <html lang="ar" dir="rtl">
         <head>
@@ -388,15 +363,15 @@ const sendResetPasswordEmail = async (email, token) => {
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>مدرسة الهدى للقرآن الكريم (El-Hudda)</h1>
+                    <h1>مدرسة الهدى للقرآن الكريم</h1>
                 </div>
                 <div class="body">
-                    <div class="greeting">السلام عليكم ورحمة الله وبركاته،</div>
+                    <div class="greeting">${greeting}</div>
                     <p class="text">
                         لقد تلقينا طلباً لإعادة تعيين كلمة المرور الخاصة بحسابك في مدرسة الهدى. يمكنك تعيين كلمة مرور جديدة من خلال الضغط على الزر أدناه:
                     </p>
                     <div class="btn-container">
-                        <a href="${resetLink}" class="btn" target="_blank">إعادة تعيين كلمة المرور</a>
+                        <a href="${resetUrl}" class="btn" target="_blank">إعادة تعيين كلمة المرور</a>
                     </div>
                     <div class="notice">
                         ⏱️ <strong>تنبيه أمان:</strong> صلاحية هذا الرابط هي <strong>15 دقيقة</strong> فقط.
@@ -406,38 +381,28 @@ const sendResetPasswordEmail = async (email, token) => {
                     </p>
                     <div class="fallback">
                         إذا واجهت مشكلة في الضغط على الزر، يمكنك نسخ الرابط التالي ولصقه في المتصفح:<br>
-                        <a href="${resetLink}" style="color: #059669;">${resetLink}</a>
+                        <a href="${resetUrl}" style="color: #059669;">${resetUrl}</a>
                     </div>
                 </div>
                 <div class="footer">
-                    © 2026 مدرسة الهدى للقرآن الكريم (El-Hudda) — جميع الحقوق محفوظة
+                    © 2026 مدرسة الهدى للقرآن الكريم — جميع الحقوق محفوظة
                 </div>
             </div>
         </body>
         </html>
     `
 
-    try {
-        const result = await sendMailViaGmail({
-            to: email,
-            subject: 'إعادة تعيين كلمة المرور | مدرسة الهدى للقرآن الكريم',
-            html
-        })
-        return result
-    } catch (err) {
-        console.error(`Failed to send reset password email via Gmail API: ${err.message || 'Unknown error'}`)
-        const error = new Error('Failed to send reset password email')
-        error.code = 'EMAIL_SEND_FAILED'
-        error.statusCode = 500
-        throw error
-    }
+    return await sendBrevoEmail({
+        toEmail: email,
+        toName: recipientName,
+        subject: 'إعادة تعيين كلمة المرور - الهدى للقرآن',
+        htmlContent
+    })
 }
 
 module.exports = {
     sendVerificationEmail,
     sendResetPasswordEmail,
-    createRawEmail,
-    getFrontendUrl,
-    getSenderEmail,
-    getGmailClient
+    sendBrevoEmail,
+    getFrontendUrl
 }
