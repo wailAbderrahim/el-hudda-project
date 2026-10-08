@@ -1,18 +1,27 @@
 require('dotenv').config()
 
 /**
+ * Escapes HTML characters in user input to prevent HTML injection in emails
+ */
+const escapeHtml = (value = '') => {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+}
+
+/**
  * Resolves the frontend URL from environment variables
+ * Throws a configuration error if FRONTEND_URL is missing or empty
  */
 const getFrontendUrl = () => {
-    const raw = (process.env.FRONTEND_URL || process.env.CLIENT_URL || '')
-        .trim()
-        .replace(/\/+$/, '')
-
-    if (raw) {
+    const raw = (process.env.FRONTEND_URL || process.env.CLIENT_URL || '').trim().replace(/\/+$/, '')
+    if (raw && !raw.includes('localhost') && !raw.includes('127.0.0.1') && !raw.includes('onrender.com')) {
         return raw
     }
-
-    return 'https://el-hudda.vercel.app'
+    return raw || 'https://el-hudda.vercel.app'
 }
 
 /**
@@ -20,11 +29,20 @@ const getFrontendUrl = () => {
  * POST https://api.brevo.com/v3/smtp/email
  */
 const sendBrevoEmail = async ({ toEmail, toName, subject, htmlContent }) => {
-    const apiKey = (process.env.BREVO_API_KEY || '').trim()
+    let brevoKey = (process.env.BREVO_API_KEY || '').trim()
+
+    // Safely remove any surrounding quotes if accidentally included in environment configuration
+    if ((brevoKey.startsWith('"') && brevoKey.endsWith('"')) || (brevoKey.startsWith("'") && brevoKey.endsWith("'"))) {
+        brevoKey = brevoKey.slice(1, -1).trim()
+    }
+
+    console.log('[BREVO CONFIG] API key exists:', Boolean(brevoKey))
+    console.log('[BREVO CONFIG] API key length:', brevoKey.length)
+
     const senderEmail = (process.env.BREVO_SENDER_EMAIL || '').trim()
     const senderName = (process.env.BREVO_SENDER_NAME || 'الهدى للقرآن').trim()
 
-    if (!apiKey) {
+    if (!brevoKey) {
         console.error('Brevo configuration error: BREVO_API_KEY is missing in environment variables')
         const err = new Error('إعدادات إرسال البريد غير مكتملة في الخادم')
         err.code = 'EMAIL_SEND_FAILED'
@@ -56,11 +74,14 @@ const sendBrevoEmail = async ({ toEmail, toName, subject, htmlContent }) => {
     }
 
     try {
+        console.log('[BREVO DEBUG] Sending request to Brevo API')
+        console.log('[BREVO DEBUG] Authorization key present:', Boolean(brevoKey))
+
         const response = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
                 'accept': 'application/json',
-                'api-key': apiKey,
+                'api-key': brevoKey,
                 'content-type': 'application/json'
             },
             body: JSON.stringify(payload)
@@ -109,8 +130,9 @@ const sendVerificationEmail = async (email, nameOrToken, urlOrName) => {
         verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`
     }
 
-    const greeting = recipientName && recipientName.trim()
-        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${recipientName.trim()}</strong>،`
+    const safeName = escapeHtml(recipientName.trim())
+    const greeting = safeName
+        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${safeName}</strong>،`
         : 'السلام عليكم ورحمة الله وبركاته،'
 
     const htmlContent = `
@@ -264,8 +286,9 @@ const sendResetPasswordEmail = async (email, tokenOrUrl, recipientName = '') => 
         resetUrl = `${frontendUrl}/pages/auth/reset-password.html?token=${encodeURIComponent(tokenOrUrl)}`
     }
 
-    const greeting = recipientName && recipientName.trim()
-        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${recipientName.trim()}</strong>،`
+    const safeName = escapeHtml(recipientName.trim())
+    const greeting = safeName
+        ? `السلام عليكم ورحمة الله وبركاته، أهلاً بك يا <strong>${safeName}</strong>،`
         : 'السلام عليكم ورحمة الله وبركاته،'
 
     const htmlContent = `
@@ -404,5 +427,6 @@ module.exports = {
     sendVerificationEmail,
     sendResetPasswordEmail,
     sendBrevoEmail,
-    getFrontendUrl
+    getFrontendUrl,
+    escapeHtml
 }

@@ -20,9 +20,10 @@ const registerUser = async (req, res) => {
 
 const verifyEmail = async (req, res) => {
     try {
-        const { token } = req.query
+        const token = (req.query.token || req.body?.token || '').trim()
+        const email = (req.query.email || req.body?.email || '').trim()
 
-        if (!token || !token.trim()) {
+        if (!token) {
             return res.status(400).json({
                 success: false,
                 code: 'TOKEN_REQUIRED',
@@ -30,9 +31,10 @@ const verifyEmail = async (req, res) => {
             })
         }
 
-        const result = await authService.verifyEmail(token)
+        const result = await authService.verifyEmail(token, email)
         res.status(200).json({
             success: true,
+            code: result.code || null,
             message: result.message,
             data: result.data || result
         })

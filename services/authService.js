@@ -78,10 +78,9 @@ const registerUser = async (userData) => {
         verificationTokenExpires: tokenExpires
     })
 
-    const frontendUrl = getFrontendUrl()
-    const verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`
-
     try {
+        const frontendUrl = getFrontendUrl()
+        const verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`
         await sendVerificationEmail(normalizedEmail, userName, verificationUrl)
     } catch (mailErr) {
         // Rollback user creation to prevent orphaned unverified accounts that cannot be activated
@@ -178,12 +177,19 @@ const forgotPassword = async (email) => {
     user.resetPasswordTokenExpires = tokenExpires
     await user.save()
 
-    const frontendUrl = getFrontendUrl()
-    const resetUrl = `${frontendUrl}/pages/auth/reset-password.html?token=${encodeURIComponent(token)}`
-
     try {
+        const frontendUrl = getFrontendUrl()
+        const resetUrl = `${frontendUrl}/pages/auth/reset-password.html?token=${encodeURIComponent(token)}`
         await sendResetPasswordEmail(normalizedEmail, resetUrl, user.name)
     } catch (mailErr) {
+        // Rollback reset token if email sending fails
+        try {
+            user.resetPasswordToken = undefined
+            user.resetPasswordTokenExpires = undefined
+            await user.save()
+        } catch (cleanupErr) {
+            console.error('Failed to rollback reset password token:', cleanupErr.message || cleanupErr)
+        }
         const err = new Error('فشل إرسال بريد إعادة تعيين كلمة المرور، يرجى المحاولة لاحقاً')
         err.statusCode = 500
         err.code = 'EMAIL_SEND_FAILED'
@@ -196,7 +202,7 @@ const forgotPassword = async (email) => {
     }
 }
 
-const verifyEmail = async (token) => {
+const verifyEmail = async (token, email) => {
     if (!token || !token.trim()) {
         const err = new Error('رمز التحقق مطلوب')
         err.statusCode = 400
@@ -204,11 +210,27 @@ const verifyEmail = async (token) => {
         throw err
     }
 
+    const trimmedToken = token.trim()
     const user = await userModel.findOne({
-        verificationToken: token.trim()
+        verificationToken: trimmedToken
     })
 
     if (!user) {
+        if (email && email.trim()) {
+            const existingUser = await userModel.findOne({ email: email.trim().toLowerCase() })
+            if (existingUser && existingUser.isVerified === true) {
+                return {
+                    success: true,
+                    code: 'ALREADY_VERIFIED',
+                    message: 'هذا البريد الإلكتروني تم تأكيده مسبقاً. يمكنك تسجيل الدخول مباشرة.',
+                    data: {
+                        email: existingUser.email,
+                        isVerified: true
+                    }
+                }
+            }
+        }
+
         const err = new Error('رمز التحقق غير صالح أو تم استخدامه مسبقاً')
         err.statusCode = 400
         err.code = 'INVALID_VERIFICATION_TOKEN'
@@ -282,6 +304,10 @@ const resendVerification = async (email) => {
         }
     }
 
+    // Preserve previous token and expiry before generating new ones
+    const previousToken = user.verificationToken
+    const previousTokenExpires = user.verificationTokenExpires
+
     // Generate new token (previous token becomes invalid)
     const token = crypto.randomBytes(32).toString('hex')
     const tokenExpires = new Date(Date.now() + 15 * 60 * 1000)
@@ -293,14 +319,22 @@ const resendVerification = async (email) => {
     // Update rate limit timestamp
     resendRateLimitMap.set(normalizedEmail, now)
 
-    const frontendUrl = getFrontendUrl()
-    const verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`
     const userName = user.name || (user.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : '')
 
     // Send new verification email via Brevo API
     try {
+        const frontendUrl = getFrontendUrl()
+        const verificationUrl = `${frontendUrl}/pages/auth/verify-email.html?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`
         await sendVerificationEmail(normalizedEmail, userName, verificationUrl)
     } catch (emailErr) {
+        // Rollback to previous token on failure
+        try {
+            user.verificationToken = previousToken
+            user.verificationTokenExpires = previousTokenExpires
+            await user.save()
+        } catch (restoreErr) {
+            console.error('Failed to restore verification token after email failure:', restoreErr.message || restoreErr)
+        }
         resendRateLimitMap.delete(normalizedEmail)
         const err = new Error('فشل إرسال بريد التفعيل، يرجى المحاولة مرة أخرى لاحقاً')
         err.statusCode = 500
