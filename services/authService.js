@@ -9,6 +9,7 @@ const registerUser = async (userData) => {
         firstName,
         lastName,
         phone,
+        dateOfBirth,
         placeOfBirth,
         municipalityOfBirth,
         educationLevel,
@@ -39,6 +40,17 @@ const registerUser = async (userData) => {
         throw err
     }
 
+    let normalizedDob = (dateOfBirth && dateOfBirth.trim()) || null
+    let normalizedPlace = placeOfBirth ? placeOfBirth.trim() : ''
+    let normalizedMun = municipalityOfBirth ? municipalityOfBirth.trim() : ''
+
+    // If placeOfBirth accidentally contains a date and dateOfBirth wasn't passed separately
+    const datePattern = /^(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4}|\d{8})$/
+    if (!normalizedDob && datePattern.test(normalizedPlace)) {
+        normalizedDob = normalizedPlace
+        normalizedPlace = normalizedMun || 'غير محدد'
+    }
+
     const normalizedEmail = email.trim().toLowerCase()
 
     const isExist = await userModel.findOne({ email: normalizedEmail })
@@ -67,8 +79,9 @@ const registerUser = async (userData) => {
         lastName: lastName.trim(),
         name: userName,
         phone: phone.trim(),
-        placeOfBirth: placeOfBirth.trim(),
-        municipalityOfBirth: municipalityOfBirth.trim(),
+        dateOfBirth: normalizedDob,
+        placeOfBirth: normalizedPlace,
+        municipalityOfBirth: normalizedMun,
         educationLevel,
         email: normalizedEmail,
         password: hashedPassword,

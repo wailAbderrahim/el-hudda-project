@@ -24,6 +24,7 @@ const getFrontendUrl = () => {
     return raw || 'https://el-hudda.vercel.app'
 }
 
+
 /**
  * Sends a transactional email via Brevo HTTP API
  * POST https://api.brevo.com/v3/smtp/email

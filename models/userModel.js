@@ -26,6 +26,12 @@ const userSchema = new mongoose.Schema({
         trim: true
     },
 
+    dateOfBirth: {
+        type: String,
+        trim: true,
+        default: null
+    },
+
     placeOfBirth: {
         type: String,
         required: true,
