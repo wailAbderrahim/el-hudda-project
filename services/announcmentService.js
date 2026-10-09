@@ -38,7 +38,7 @@ const createAnnounecement = async (announcemntData, user)=>{
     for(const user of users){
         await notificationService.createNotification({
             recipient:user._id,
-            title: 'New announcement',
+            title: title,
             message: content,
             type: 'announcement'
 

@@ -72,8 +72,8 @@ const createMemorization = async (memorizationData, user)=>{
 
     await notificationService.createNotification({
         recipient:student,
-        title:'New Memorization',
-        message:`${surah}, from ${fromVerse} to ${toVerse}`,
+        title:'تسميع جديد',
+        message:`سورة ${surah}، من الآية ${fromVerse} إلى ${toVerse}`,
         type:'memorization'
     })    
     return memorization

@@ -38,6 +38,14 @@ router.patch(
 )
 
 
+// Delete all notifications of current user
+router.delete(
+    '/',
+    authMidllware,
+    notificationController.deleteAllNotifications
+)
+
+
 // Delete notification
 router.delete(
     '/:id',

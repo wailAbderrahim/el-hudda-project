@@ -61,10 +61,17 @@ const createEvaluation = async (evaluationData,user)=>{
         notes,
         date:evaluationDate
     })
+    const typeMap = {
+        memorization: 'الحفظ',
+        review: 'المراجعة',
+        tajweed: 'التجويد',
+        behavior: 'السلوك'
+    }
+    const typeArabic = typeMap[type] || type
     await notificationService.createNotification({
             recipient: student,
-            title: 'New Evaluation',
-            message: `You received a new ${type} evaluation with score ${score}/10`,
+            title: 'تقييم جديد',
+            message: `حصلت على تقييم جديد في ${typeArabic} بدرجة ${score}/10`,
             type: 'evaluation'
     })
 

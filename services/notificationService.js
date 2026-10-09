@@ -125,11 +125,22 @@ if(!notification){
 return 'notification deleted'
 }
 
+const deleteAllNotifications = async (userId) => {
+    if(!userId){
+        throw new Error('messing userId')
+    }
+    const result = await Notification.deleteMany({
+        recipient: userId
+    })
+    return result
+}
+
 module.exports = {
     createNotification,
     getNotifications,
     getNotificationById,
     markUsRead,
     markUsReadAll,
-    deleteNotification
+    deleteNotification,
+    deleteAllNotifications
 }
