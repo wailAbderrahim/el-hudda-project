@@ -21,7 +21,7 @@ const getMatnById = async (matnId) => {
 }
 
 const createMatn = async (matnData, user) => {
-    if (user.role !== 'admin') {
+    if (user.role !== 'admin' && user.role !== 'teacher') {
         const err = new Error('غير مصرح لك بإضافة متون')
         err.statusCode = 403
         throw err
@@ -54,7 +54,7 @@ const createMatn = async (matnData, user) => {
 }
 
 const updateMatn = async (matnId, matnData, user) => {
-    if (user.role !== 'admin') {
+    if (user.role !== 'admin' && user.role !== 'teacher') {
         const err = new Error('غير مصرح لك بتعديل المتون')
         err.statusCode = 403
         throw err
@@ -162,7 +162,18 @@ const createStudentMatnProgress = async (progressData, user) => {
         throw err
     }
 
-    const { studentId, matnId, section, chapterIndex, progressPercentage, status, revisionStatus, masteryGrade, recitationDate, notes } = progressData
+    const studentId = progressData.studentId || progressData.student
+    const matnId = progressData.matnId || progressData.matn
+    const section = (progressData.section || progressData.currentSection || '').trim() || 'الباب الأول'
+    const chapterIndex = typeof progressData.chapterIndex === 'number' ? progressData.chapterIndex : 0
+    const progressPercentage = typeof progressData.progressPercentage === 'number'
+        ? progressData.progressPercentage
+        : (typeof progressData.completionPercentage === 'number' ? progressData.completionPercentage : 0)
+    const status = progressData.status || 'in_progress'
+    const revisionStatus = progressData.revisionStatus || 'none'
+    const masteryGrade = progressData.masteryGrade || 'good'
+    const recitationDate = progressData.recitationDate
+    const notes = (progressData.notes || progressData.teacherNotes || '').trim()
 
     if (!studentId || !matnId || !section) {
         const err = new Error('بيانات الطالب والمتن والمقطع مطلوبة')
@@ -177,10 +188,16 @@ const createStudentMatnProgress = async (progressData, user) => {
         throw err
     }
 
-    let halaqaId = null
-    const halaqa = await Halaqa.findOne({ students: studentId })
-    if (halaqa) {
-        halaqaId = halaqa._id
+    let halaqaId = progressData.halaqaId || progressData.halaqa || null
+    let halaqa = null
+    if (halaqaId) {
+        halaqa = await Halaqa.findById(halaqaId)
+    }
+    if (!halaqa) {
+        halaqa = await Halaqa.findOne({ students: studentId })
+        if (halaqa) {
+            halaqaId = halaqa._id
+        }
     }
 
     if (user.role === 'teacher') {
@@ -198,19 +215,23 @@ const createStudentMatnProgress = async (progressData, user) => {
         throw err
     }
 
+    const teacherId = (user.role === 'teacher')
+        ? user._id
+        : (progressData.teacherId || (halaqa && halaqa.teacher ? halaqa.teacher : user._id))
+
     const progress = await StudentMatnProgress.create({
         student: studentId,
         matn: matnId,
         halaqa: halaqaId,
-        teacher: user._id,
+        teacher: teacherId,
         section: section.trim(),
-        chapterIndex: typeof chapterIndex === 'number' ? chapterIndex : 0,
-        progressPercentage: typeof progressPercentage === 'number' ? progressPercentage : 0,
-        status: status || 'in_progress',
-        revisionStatus: revisionStatus || 'none',
-        masteryGrade: masteryGrade || 'good',
+        chapterIndex,
+        progressPercentage,
+        status,
+        revisionStatus,
+        masteryGrade: String(masteryGrade).trim(),
         recitationDate: recitationDate ? new Date(recitationDate) : new Date(),
-        notes: (notes || '').trim()
+        notes
     })
 
     return await StudentMatnProgress.findById(progress._id)
@@ -243,16 +264,19 @@ const updateStudentMatnProgress = async (id, progressData, user) => {
         }
     }
 
-    const { section, chapterIndex, progressPercentage, status, revisionStatus, masteryGrade, recitationDate, notes } = progressData
+    const { section, chapterIndex, progressPercentage, completionPercentage, status, revisionStatus, masteryGrade, recitationDate, notes, teacherNotes } = progressData
 
     if (section !== undefined) progress.section = section.trim()
+    else if (progressData.currentSection !== undefined) progress.section = progressData.currentSection.trim()
     if (chapterIndex !== undefined) progress.chapterIndex = Number(chapterIndex)
     if (progressPercentage !== undefined) progress.progressPercentage = Number(progressPercentage)
+    else if (completionPercentage !== undefined) progress.progressPercentage = Number(completionPercentage)
     if (status !== undefined) progress.status = status
     if (revisionStatus !== undefined) progress.revisionStatus = revisionStatus
-    if (masteryGrade !== undefined) progress.masteryGrade = masteryGrade
+    if (masteryGrade !== undefined) progress.masteryGrade = String(masteryGrade).trim()
     if (recitationDate !== undefined) progress.recitationDate = new Date(recitationDate)
     if (notes !== undefined) progress.notes = notes.trim()
+    else if (teacherNotes !== undefined) progress.notes = teacherNotes.trim()
 
     await progress.save()
 

@@ -38,7 +38,7 @@ const studentMatnProgressSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['not_started', 'in_progress', 'needs_revision', 'mastered'],
+        enum: ['not_started', 'in_progress', 'memorizing', 'completed', 'needs_revision', 'reviewed', 'mastered'],
         default: 'in_progress'
     },
     revisionStatus: {
@@ -48,7 +48,6 @@ const studentMatnProgressSchema = new mongoose.Schema({
     },
     masteryGrade: {
         type: String,
-        enum: ['excellent', 'very_good', 'good', 'acceptable', 'needs_work', 'none'],
         default: 'good'
     },
     recitationDate: {

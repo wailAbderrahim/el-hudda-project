@@ -14,8 +14,8 @@ router.delete('/progress/:id', roleMidlleWare('admin', 'teacher'), matnControlle
 
 router.get('/', matnController.getMatns)
 router.get('/:id', matnController.getMatnById)
-router.post('/', roleMidlleWare('admin'), matnController.createMatn)
-router.put('/:id', roleMidlleWare('admin'), matnController.updateMatn)
+router.post('/', roleMidlleWare('admin', 'teacher'), matnController.createMatn)
+router.put('/:id', roleMidlleWare('admin', 'teacher'), matnController.updateMatn)
 router.delete('/:id', roleMidlleWare('admin'), matnController.deleteMatn)
 
 module.exports = router

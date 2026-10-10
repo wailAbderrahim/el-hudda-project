@@ -210,6 +210,19 @@ const createExam = async (examData, user) => {
         rubric: (q.rubric || '').trim()
     })) : []
 
+    if (user.role === 'teacher' && targetHalaqa) {
+        const h = await Halaqa.findById(targetHalaqa)
+        if (!h || h.teacher.toString() !== user._id.toString()) {
+            const err = new Error('لا يمكنك إنشاء امتحان لحلقة لا تشرف عليها')
+            err.statusCode = 403
+            throw err
+        }
+    }
+
+    const assignedTeacher = (user.role === 'admin' && (examData.teacher || examData.teacherId))
+        ? (examData.teacher || examData.teacherId)
+        : user._id
+
     const exam = await Exam.create({
         title: title.trim(),
         description: (description || '').trim(),
@@ -225,7 +238,7 @@ const createExam = async (examData, user) => {
         durationMinutes: typeof durationMinutes === 'number' ? durationMinutes : 45,
         totalScore: tScore,
         passingScore: pScore,
-        teacher: user._id,
+        teacher: assignedTeacher,
         status: status || 'draft',
         isResultsPublished: false,
         autoPromoteOnPass: Boolean(autoPromoteOnPass),
@@ -338,7 +351,7 @@ const startExamAttempt = async (examId, user) => {
         throw err
     }
 
-    if (exam.status !== 'active') {
+    if (!['active', 'scheduled', 'ongoing'].includes(exam.status)) {
         const err = new Error('هذا الامتحان غير متاح للتقديم حالياً')
         err.statusCode = 400
         throw err
@@ -538,9 +551,9 @@ const submitExamAttempt = async (examId, finalAnswers, user) => {
         const ans = attempt.answers.find(a => a.questionIndex === idx)
         if (!ans) return
 
-        if (q.type === 'single_choice' || q.type === 'true_false') {
-            const studentAns = String(ans.answer || '').trim().toLowerCase()
-            const correctAns = String(q.correctAnswer || '').trim().toLowerCase()
+        if (q.type === 'single_choice' || q.type === 'multiple_choice' || q.type === 'true_false') {
+            const studentAns = String(ans.answer !== undefined ? ans.answer : '').trim().toLowerCase()
+            const correctAns = String(q.correctAnswer !== undefined ? q.correctAnswer : '').trim().toLowerCase()
 
             if (studentAns && studentAns === correctAns) {
                 ans.score = q.points
@@ -606,6 +619,32 @@ const getExamAttempts = async (examId, user) => {
 
     return await ExamAttempt.find({ exam: examId })
         .sort({ submittedAt: -1, startedAt: -1 })
+        .populate('student', 'name firstName lastName email phone currentLevel')
+        .populate('gradedBy', 'name')
+}
+
+const getAllAttempts = async (user, query = {}) => {
+    if (user.role !== 'admin' && user.role !== 'teacher') {
+        const err = new Error('غير مصرح لك بالاطلاع على محاولات الطلاب')
+        err.statusCode = 403
+        throw err
+    }
+
+    const filter = {}
+    if (query.examId) {
+        filter.exam = query.examId
+    } else if (user.role === 'teacher') {
+        const teacherExams = await Exam.find({ teacher: user._id }).select('_id')
+        filter.exam = { $in: teacherExams.map(e => e._id) }
+    }
+
+    if (query.status) {
+        filter.status = query.status
+    }
+
+    return await ExamAttempt.find(filter)
+        .sort({ submittedAt: -1, createdAt: -1 })
+        .populate('exam', 'title totalScore passingScore type format isResultsPublished')
         .populate('student', 'name firstName lastName email phone currentLevel')
         .populate('gradedBy', 'name')
 }
@@ -696,6 +735,12 @@ const publishExamResults = async (examId, user) => {
         throw err
     }
 
+    if (user.role === 'teacher' && exam.teacher.toString() !== user._id.toString()) {
+        const err = new Error('غير مصرح لك بنشر نتائج امتحان لمعلم آخر')
+        err.statusCode = 403
+        throw err
+    }
+
     exam.isResultsPublished = true
     await exam.save()
 
@@ -728,6 +773,15 @@ const getStudentResults = async (studentId, user) => {
         throw err
     }
 
+    if (user.role === 'teacher') {
+        const halaqa = await Halaqa.findOne({ teacher: user._id, students: studentId })
+        if (!halaqa) {
+            const err = new Error('الطالب ليس مسجلاً في حلقتك')
+            err.statusCode = 403
+            throw err
+        }
+    }
+
     let filter = { student: studentId }
     if (user.role === 'student') {
         // Students see published results or exams with approved/published status
@@ -757,6 +811,7 @@ module.exports = {
     saveExamProgress,
     submitExamAttempt,
     getExamAttempts,
+    getAllAttempts,
     gradeAttempt,
     publishExamResults,
     getStudentResults

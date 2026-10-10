@@ -12,7 +12,7 @@ const questionSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['single_choice', 'true_false', 'short_answer', 'essay', 'oral_recitation'],
+        enum: ['single_choice', 'multiple_choice', 'true_false', 'short_answer', 'essay', 'oral_recitation'],
         required: true
     },
     options: {
@@ -115,7 +115,7 @@ const examSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['draft', 'active', 'ended', 'cancelled'],
+        enum: ['draft', 'active', 'scheduled', 'ongoing', 'ended', 'completed', 'graded', 'published', 'cancelled'],
         default: 'draft'
     },
     isResultsPublished: {

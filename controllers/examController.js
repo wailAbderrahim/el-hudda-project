@@ -81,6 +81,15 @@ const getExamAttempts = async (req, res) => {
     }
 }
 
+const getAllAttempts = async (req, res) => {
+    try {
+        const attempts = await examService.getAllAttempts(req.user, req.query)
+        res.status(200).json(attempts)
+    } catch (err) {
+        res.status(err.statusCode || 400).json({ message: err.message })
+    }
+}
+
 const gradeAttempt = async (req, res) => {
     try {
         const attempt = await examService.gradeAttempt(req.params.attemptId, req.body, req.user)
@@ -118,6 +127,7 @@ module.exports = {
     saveExamProgress,
     submitExamAttempt,
     getExamAttempts,
+    getAllAttempts,
     gradeAttempt,
     publishExamResults,
     getStudentResults
