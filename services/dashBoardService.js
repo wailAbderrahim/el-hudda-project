@@ -46,18 +46,21 @@ const getDashboardStats = async (user) => {
         }
 
         // Matn stats
-        const activeMatnsCount = await Matn.countDocuments({ isActive: true })
-        const matnProgressCount = await StudentMatnProgress.countDocuments()
+        const activeMatnsCount = await Matn.countDocuments({ isActive: { $ne: false } }).catch(() => 0)
+        const matnProgressCount = await StudentMatnProgress.countDocuments().catch(() => 0)
 
         // Exam stats
         const now = new Date()
         const upcomingExamsCount = await Exam.countDocuments({
-            status: 'active',
-            $or: [{ startDate: { $gt: now } }, { startDate: null }]
-        })
-        const pendingGradingExamsCount = await ExamAttempt.countDocuments({ status: 'grading' })
-        const pendingApprovalResultsCount = await ExamAttempt.countDocuments({ status: 'approved' })
-        const levelTransitionsCount = await StudentLevelHistory.countDocuments()
+            status: { $in: ['active', 'scheduled', 'ongoing'] }
+        }).catch(() => 0)
+        const pendingGradingExamsCount = await ExamAttempt.countDocuments({
+            status: { $in: ['submitted', 'grading'] }
+        }).catch(() => 0)
+        const pendingApprovalResultsCount = await ExamAttempt.countDocuments({
+            status: { $in: ['approved', 'published'] }
+        }).catch(() => 0)
+        const levelTransitionsCount = await StudentLevelHistory.countDocuments().catch(() => 0)
 
         return {
             students,
