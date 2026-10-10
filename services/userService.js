@@ -50,28 +50,33 @@ const updateUser = async (userId, updateData) => {
         placeOfBirth,
         municipalityOfBirth,
         educationLevel,
+        currentLevel,
         email,
         role,
         isVerified
     } = updateData
 
+    const updateFields = {
+        name,
+        firstName,
+        lastName,
+        phone,
+        dateOfBirth,
+        placeOfBirth,
+        municipalityOfBirth,
+        educationLevel,
+        email,
+        role,
+        isVerified
+    }
+    if (currentLevel !== undefined) {
+        updateFields.currentLevel = currentLevel || null
+    }
 
     const updatedUser = await userModel
         .findByIdAndUpdate(
             userId,
-            {
-                name,
-                firstName,
-                lastName,
-                phone,
-                dateOfBirth,
-                placeOfBirth,
-                municipalityOfBirth,
-                educationLevel,
-                email,
-                role,
-                isVerified
-            },
+            updateFields,
             {
                 new: true,
                 runValidators: true
@@ -80,6 +85,7 @@ const updateUser = async (userId, updateData) => {
         .select(
             '-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires'
         )
+        .populate('currentLevel', 'name order')
 
     if (!updatedUser) {
         throw new Error('User not found')
@@ -96,6 +102,7 @@ const getUserById = async (userId) => {
         .select(
             '-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires'
         )
+        .populate('currentLevel', 'name order')
 
     if (!user) {
         throw new Error('User not found')
@@ -112,6 +119,7 @@ const getUsers = async () => {
         .select(
             '-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires'
         )
+        .populate('currentLevel', 'name order')
 
     return users
 }
@@ -172,6 +180,7 @@ const getProfile = async (userId) => {
         .select(
             '-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires'
         )
+        .populate('currentLevel', 'name order passingScore requirements nextLevel')
 
     if (!user) {
         throw new Error('User not found')

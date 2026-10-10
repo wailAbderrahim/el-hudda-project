@@ -8,7 +8,7 @@ const dashboardController = require('../controllers/dashBoardController')
 router.get(
     '/',
     authMidllware,
-    roleMidlleWare('admin'),
+    roleMidlleWare('admin', 'teacher'),
     dashboardController.getDashboardStats
 )
 

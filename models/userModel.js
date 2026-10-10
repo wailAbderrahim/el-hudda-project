@@ -50,6 +50,12 @@ const userSchema = new mongoose.Schema({
         trim: true
     },
 
+    currentLevel: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Level',
+        default: null
+    },
+
     email: {
         type: String,
         required: true,

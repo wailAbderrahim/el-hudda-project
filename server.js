@@ -17,6 +17,9 @@ const webSocketServer = require('./webSocket/webSocketServer')
 const notificationRoute = require('./routes/notificationRoute')
 const dashboardRoute = require('./routes/dashboardRoute')
 const reportRoute = require('./routes/reportsRoute')
+const levelRoute = require('./routes/levelRoute')
+const matnRoute = require('./routes/matnRoute')
+const examRoute = require('./routes/examRoute')
 
 
 connectedDb()
@@ -89,6 +92,9 @@ app.use('/api/announcements', announcementRoute)
 app.use('/api/notifications', notificationRoute)
 app.use('/api/dashboard', dashboardRoute)
 app.use('/api/reports', reportRoute)
+app.use('/api/levels', levelRoute)
+app.use('/api/matn', matnRoute)
+app.use('/api/exams', examRoute)
 
 
 /* =========================================================
