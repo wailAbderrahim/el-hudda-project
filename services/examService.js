@@ -652,10 +652,10 @@ const submitExamAttempt = async (examId, finalAnswers, user) => {
         attempt.score = autoGradedPoints
         attempt.percentage = exam.totalScore > 0 ? Number(((autoGradedPoints / exam.totalScore) * 100).toFixed(1)) : 0
         attempt.isPassed = attempt.score >= exam.passingScore
-        attempt.status = 'approved'
-        attempt.gradedAt = now
+        attempt.status = 'submitted'
+        attempt.gradedAt = null
     } else {
-        attempt.status = 'grading'
+        attempt.status = 'submitted'
     }
 
     await attempt.save()
@@ -735,9 +735,9 @@ const enrichAttemptWithQuestions = (att, examSource) => {
                 correctAnswer: qCorrect,
                 points: qPoints,
                 rubric: qRubric,
-                // Unified aliases for all frontends (Admin, Teacher, and Student)
                 score: typeof rawAns.score === 'number' ? rawAns.score : null,
                 awardedScore: typeof rawAns.score === 'number' ? rawAns.score : null,
+                scoreAwarded: typeof rawAns.score === 'number' ? rawAns.score : null,
                 answer: rawAns.answer !== undefined ? rawAns.answer : '',
                 answerText: rawAns.answer !== undefined ? String(rawAns.answer) : '',
                 feedback: rawAns.feedback || '',
@@ -751,6 +751,16 @@ const enrichAttemptWithQuestions = (att, examSource) => {
             }
         })
     }
+
+    const earned = typeof obj.score === 'number' ? obj.score : null
+    const isGraded = ['graded', 'approved', 'published'].includes(obj.status) || earned !== null
+    obj.isGraded = isGraded
+    obj.score = earned
+    obj.totalScoreAwarded = earned
+    obj.scoreAwarded = earned
+    obj.earnedScore = earned
+    obj.studentScore = earned
+    obj.feedback = obj.teacherNotes || ''
 
     return obj
 }
@@ -857,7 +867,7 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
             ) || attempt.answers[parseInt(qKey, 10)]
 
             if (ans) {
-                ans.score = scoreNum
+                ans.score = Math.max(0, scoreNum)
                 ans.autoGraded = false
             }
         })
@@ -899,7 +909,7 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
 
             if (ans) {
                 const s = typeof item.score === 'number' ? item.score : parseFloat(item.score)
-                if (!isNaN(s)) ans.score = s
+                if (!isNaN(s)) ans.score = Math.max(0, s)
                 const fb = item.feedback || item.teacherNotes
                 if (fb && typeof fb === 'string') ans.feedback = fb.trim()
                 ans.autoGraded = false
@@ -907,29 +917,50 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
         })
     }
 
+    // Subjective question score validation:
+    // If exam has subjective questions, ensure marks are provided before publication
+    const directCheck = typeof gradeData.directScore === 'number' ? gradeData.directScore : null
+    if (exam && Array.isArray(exam.questions) && directCheck === null) {
+        exam.questions.forEach((q, idx) => {
+            if (q.type === 'essay' || q.type === 'oral' || q.type === 'subjective') {
+                const ans = attempt.answers.find(a =>
+                    (a.questionIndex === idx) ||
+                    (a.questionId && (String(a.questionId) === String(q._id) || String(a.questionId) === String(q.id)))
+                )
+                if (!ans || typeof ans.score !== 'number' || isNaN(ans.score)) {
+                    const err = new Error(`يرجى رصد درجة السؤال المقالي/الشفوي (السؤال رقم ${idx + 1}: ${q.text || ''}) قبل إعلان النتيجة`)
+                    err.statusCode = 400
+                    throw err
+                }
+            }
+        })
+    }
+
     // 4. Overall Score Calculation
     const direct = typeof gradeData.directScore === 'number'
         ? gradeData.directScore
-        : (typeof gradeData.totalScore === 'number'
+        : (typeof gradeData.totalScore === 'number' && (!scoresList || scoresList.length === 0) && (!gradeData.scores || Object.keys(gradeData.scores).length === 0)
             ? gradeData.totalScore
-            : (typeof gradeData.score === 'number' ? gradeData.score : null))
+            : null)
 
-    if (direct !== null && !isNaN(direct) && (!scoresList || scoresList.length === 0) && (!gradeData.scores || Object.keys(gradeData.scores).length === 0)) {
+    if (direct !== null && !isNaN(direct)) {
         attempt.score = Math.min(Math.max(0, direct), exam.totalScore)
     } else {
         // Calculate sum from answers
         let total = 0
         let hasAnyAnswerScore = false
         attempt.answers.forEach(a => {
-            if (typeof a.score === 'number') {
+            if (typeof a.score === 'number' && !isNaN(a.score)) {
                 total += a.score
                 hasAnyAnswerScore = true
             }
         })
         if (hasAnyAnswerScore) {
             attempt.score = Math.min(total, exam.totalScore)
-        } else if (direct !== null && !isNaN(direct)) {
-            attempt.score = Math.min(Math.max(0, direct), exam.totalScore)
+        } else if (typeof gradeData.score === 'number') {
+            attempt.score = Math.min(Math.max(0, gradeData.score), exam.totalScore)
+        } else {
+            attempt.score = 0
         }
     }
 
@@ -942,8 +973,56 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
     attempt.gradedBy = user._id
     attempt.gradedAt = new Date()
 
-    if (exam.isResultsPublished) {
+    // Immediate publication default for single-click correction & publication
+    const publishImmediately = gradeData.publishImmediately !== false && gradeData.draft !== true
+
+    if (publishImmediately) {
         attempt.status = 'published'
+        exam.isResultsPublished = true
+        await exam.save()
+
+        // Immediate student notification
+        try {
+            await notificationService.createNotification({
+                recipient: attempt.student,
+                title: 'إعلان نتيجة الامتحان',
+                message: `تم تصحيح وإعلان نتيجة امتحان: ${exam.title} (${attempt.score || 0}/${exam.totalScore}) - ${attempt.isPassed ? 'ناجح ومجتاز ✓' : 'لم يجتز'}`,
+                type: 'exam'
+            })
+        } catch (_) {}
+
+        // Immediate Level Auto-Promotion if passing a transition level exam
+        if (exam.type === 'level' && exam.autoPromoteOnPass && attempt.isPassed && exam.targetLevel) {
+            try {
+                const studentUser = await User.findById(attempt.student)
+                if (studentUser) {
+                    const targetLvl = await Level.findById(exam.targetLevel)
+                    const nextLvlId = (targetLvl && targetLvl.nextLevel) ? targetLvl.nextLevel : exam.targetLevel
+                    if (nextLvlId && String(studentUser.currentLevel) !== String(nextLvlId)) {
+                        const prevLevel = studentUser.currentLevel
+                        studentUser.currentLevel = nextLvlId
+                        await studentUser.save()
+                        await StudentLevelHistory.create({
+                            student: studentUser._id,
+                            previousLevel: prevLevel,
+                            newLevel: nextLvlId,
+                            changedBy: user._id,
+                            changeDate: new Date(),
+                            reason: 'اجتياز امتحان الانتقال المعتمد',
+                            exam: exam._id
+                        })
+                        await notificationService.createNotification({
+                            recipient: studentUser._id,
+                            title: 'ترقية المستوى التعليمي',
+                            message: `تهانينا! لاجتيازك بنجاح امتحان "${exam.title}"، تمت ترقيتك للمستوى التالي.`,
+                            type: 'level'
+                        })
+                    }
+                }
+            } catch (pErr) {
+                console.error("Auto promote on pass error in gradeAttempt:", pErr)
+            }
+        }
     } else {
         attempt.status = 'approved'
     }
@@ -1053,8 +1132,8 @@ const getStudentResults = async (studentId, user) => {
 
     let filter = { student: studentId }
     if (user.role === 'student') {
-        // Students see published results or approved results
-        filter.status = { $in: ['approved', 'published'] }
+        // Students see officially published results only
+        filter.status = 'published'
     }
 
     const attempts = await ExamAttempt.find(filter)
