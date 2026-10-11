@@ -2,6 +2,7 @@ const Matn = require('../models/matnModel')
 const StudentMatnProgress = require('../models/studentMatnProgressModel')
 const User = require('../models/userModel')
 const Halaqa = require('../models/halaqaModel')
+const notificationService = require('./notificationService')
 
 const getMatns = async (user) => {
     const filter = (user && user.role === 'admin') ? {} : { isActive: true }
@@ -27,17 +28,18 @@ const createMatn = async (matnData, user) => {
         throw err
     }
 
-    const { name, description, level, chapters, totalSections } = matnData
-    if (!name || !name.trim()) {
+    const { description, level, chapters, totalSections } = matnData
+    const name = (matnData.name || matnData.title || '').trim()
+    if (!name) {
         const err = new Error('اسم المتن مطلوب')
         err.statusCode = 400
         throw err
     }
 
     const normalizedChapters = Array.isArray(chapters) ? chapters.map((c, i) => ({
-        title: (c.title || `الباب ${i + 1}`).trim(),
+        title: (c.title || c.name || `الباب ${i + 1}`).trim(),
         order: typeof c.order === 'number' ? c.order : i + 1,
-        versesCount: typeof c.versesCount === 'number' ? c.versesCount : 0,
+        versesCount: typeof c.versesCount === 'number' ? c.versesCount : (Number(c.verses) || 0),
         description: (c.description || '').trim()
     })) : []
 
@@ -49,6 +51,41 @@ const createMatn = async (matnData, user) => {
         totalSections: normalizedChapters.length || (totalSections || 1),
         isActive: true
     })
+
+    return matn
+}
+
+const addChapter = async (matnId, chapterData, user) => {
+    if (user.role !== 'admin' && user.role !== 'teacher') {
+        const err = new Error('غير مصرح لك بإضافة أبواب للمتن')
+        err.statusCode = 403
+        throw err
+    }
+
+    const matn = await Matn.findById(matnId)
+    if (!matn) {
+        const err = new Error('المتن غير موجود')
+        err.statusCode = 404
+        throw err
+    }
+
+    const title = (chapterData.title || chapterData.name || '').trim()
+    if (!title) {
+        const err = new Error('عنوان الباب مطلوب')
+        err.statusCode = 400
+        throw err
+    }
+
+    const newChapter = {
+        title,
+        order: typeof chapterData.order === 'number' ? chapterData.order : matn.chapters.length + 1,
+        versesCount: typeof chapterData.versesCount === 'number' ? chapterData.versesCount : (Number(chapterData.verses) || 0),
+        description: (chapterData.description || '').trim()
+    }
+
+    matn.chapters.push(newChapter)
+    matn.totalSections = matn.chapters.length
+    await matn.save()
 
     return matn
 }
@@ -234,11 +271,22 @@ const createStudentMatnProgress = async (progressData, user) => {
         notes
     })
 
-    return await StudentMatnProgress.findById(progress._id)
+    const populatedProgress = await StudentMatnProgress.findById(progress._id)
         .populate('student', 'name firstName lastName email currentLevel')
         .populate('matn', 'name level chapters')
         .populate('teacher', 'name firstName lastName email')
         .populate('halaqa', 'name')
+
+    try {
+        await notificationService.createNotification({
+            recipient: studentId,
+            title: 'تسجيل تقدم في المتون العلمية',
+            message: `تم تسجيل تسميعك لمتن: ${matn.name} (${section}) بنجاح.`,
+            type: 'matn'
+        })
+    } catch (_) {}
+
+    return populatedProgress
 }
 
 const updateStudentMatnProgress = async (id, progressData, user) => {
@@ -318,6 +366,7 @@ module.exports = {
     getMatns,
     getMatnById,
     createMatn,
+    addChapter,
     updateMatn,
     deleteMatn,
     getMatnProgress,

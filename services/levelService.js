@@ -2,6 +2,7 @@ const Level = require('../models/levelModel')
 const StudentLevelHistory = require('../models/studentLevelHistoryModel')
 const User = require('../models/userModel')
 const Halaqa = require('../models/halaqaModel')
+const notificationService = require('./notificationService')
 
 const getLevels = async (user) => {
     const filter = (user && user.role === 'admin') ? {} : { isActive: true }
@@ -179,6 +180,15 @@ const assignStudentLevel = async ({ studentId, newLevelId, reason, notes, examId
         .populate('newLevel', 'name order')
         .populate('changedBy', 'name role')
         .populate('exam', 'title')
+
+    try {
+        await notificationService.createNotification({
+            recipient: student._id,
+            title: 'ترقية المستوى التعليمي',
+            message: `تم اعتماد انتقالك إلى المستوى التعليمي: ${newLevel.name}${reason ? ' (' + reason + ')' : ''}`,
+            type: 'level'
+        })
+    } catch (_) {}
 
     return {
         student: {

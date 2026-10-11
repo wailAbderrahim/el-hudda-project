@@ -27,6 +27,15 @@ const createMatn = async (req, res) => {
     }
 }
 
+const addChapter = async (req, res) => {
+    try {
+        const matn = await matnService.addChapter(req.params.id, req.body, req.user)
+        res.status(201).json(matn)
+    } catch (err) {
+        res.status(err.statusCode || 400).json({ message: err.message })
+    }
+}
+
 const updateMatn = async (req, res) => {
     try {
         const matn = await matnService.updateMatn(req.params.id, req.body, req.user)
@@ -94,6 +103,7 @@ module.exports = {
     getMatns,
     getMatnById,
     createMatn,
+    addChapter,
     updateMatn,
     deleteMatn,
     getMatnProgress,

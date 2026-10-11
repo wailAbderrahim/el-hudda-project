@@ -3,6 +3,7 @@ const ExamAttempt = require('../models/examAttemptModel')
 const User = require('../models/userModel')
 const Halaqa = require('../models/halaqaModel')
 const Level = require('../models/levelModel')
+const StudentLevelHistory = require('../models/studentLevelHistoryModel')
 const notificationService = require('./notificationService')
 
 /**
@@ -14,6 +15,35 @@ const stripCorrectAnswers = (questions) => {
         delete obj.correctAnswer
         return obj
     })
+}
+
+const notifyTargetedStudentsAboutExam = async (exam) => {
+    try {
+        let studentIds = []
+        if (exam.targetStudents && exam.targetStudents.length > 0) {
+            studentIds = exam.targetStudents
+        } else if (exam.targetHalaqa) {
+            const h = await Halaqa.findById(exam.targetHalaqa)
+            if (h && h.students) studentIds = h.students
+        } else if (exam.targetLevel) {
+            const studentsInLevel = await User.find({ currentLevel: exam.targetLevel, role: 'student' }).select('_id')
+            studentIds = studentsInLevel.map(s => s._id)
+        } else {
+            const allStudents = await User.find({ role: 'student' }).select('_id')
+            studentIds = allStudents.map(s => s._id)
+        }
+
+        for (const sId of studentIds) {
+            try {
+                await notificationService.createNotification({
+                    recipient: sId,
+                    title: 'امتحان جديد متاح',
+                    message: `تم نشر امتحان جديد: ${exam.title} (${exam.format === 'online' ? 'إلكتروني' : 'حضوري'})`,
+                    type: 'exam'
+                })
+            } catch (_) {}
+        }
+    } catch (_) {}
 }
 
 const getExams = async (user) => {
@@ -186,29 +216,49 @@ const createExam = async (examData, user) => {
         throw err
     }
 
-    if (!format || !['in_person', 'online'].includes(format)) {
+    const examFormat = (format || examData.mode || 'online').toLowerCase()
+    if (!['in_person', 'online'].includes(examFormat)) {
         const err = new Error('نمط الامتحان غير صالح (حضوري أو عن بعد)')
         err.statusCode = 400
         throw err
     }
 
-    const tScore = Number(totalScore) || 100
-    const pScore = Number(passingScore) || 60
-    if (pScore > tScore) {
+    const tScore = Number(totalScore || examData.totalMarks) || 100
+    let pScore = Number(passingScore) || 60
+    if (pScore > tScore && pScore <= 100 && tScore > 0) {
+        pScore = Math.round((pScore / 100) * tScore)
+    } else if (pScore > tScore) {
         const err = new Error('درجة النجاح لا يمكن أن تتجاوز العلامة القصوى')
         err.statusCode = 400
         throw err
     }
 
-    const normalizedQuestions = Array.isArray(questions) ? questions.map((q, idx) => ({
-        id: q.id || `q_${Date.now()}_${idx}`,
-        text: (q.text || '').trim(),
-        type: q.type || 'single_choice',
-        options: Array.isArray(q.options) ? q.options.map(o => String(o).trim()) : [],
-        correctAnswer: (q.correctAnswer !== undefined ? String(q.correctAnswer) : '').trim(),
-        points: typeof q.points === 'number' ? q.points : 10,
-        rubric: (q.rubric || '').trim()
-    })) : []
+    const normalizedQuestions = Array.isArray(questions) ? questions.map((q, idx) => {
+        let qOptions = []
+        let qCorrect = (q.correctAnswer !== undefined ? String(q.correctAnswer) : '').trim()
+
+        if (Array.isArray(q.options)) {
+            qOptions = q.options.map(o => {
+                if (typeof o === 'object' && o !== null) {
+                    if (o.isCorrect && !qCorrect) {
+                        qCorrect = String(o.text || '').trim()
+                    }
+                    return String(o.text || '').trim()
+                }
+                return String(o).trim()
+            })
+        }
+
+        return {
+            id: q.id || `q_${Date.now()}_${idx}`,
+            text: (q.text || q.questionText || '').trim(),
+            type: q.type || 'single_choice',
+            options: qOptions,
+            correctAnswer: qCorrect,
+            points: typeof q.points === 'number' ? q.points : (typeof q.marks === 'number' ? q.marks : 10),
+            rubric: (q.rubric || '').trim()
+        }
+    }) : []
 
     if (user.role === 'teacher' && targetHalaqa) {
         const h = await Halaqa.findById(targetHalaqa)
@@ -228,7 +278,7 @@ const createExam = async (examData, user) => {
         description: (description || '').trim(),
         instructions: (instructions || '').trim(),
         type,
-        format,
+        format: examFormat,
         targetLevel: targetLevel || null,
         targetMatn: targetMatn || null,
         targetHalaqa: targetHalaqa || null,
@@ -244,6 +294,10 @@ const createExam = async (examData, user) => {
         autoPromoteOnPass: Boolean(autoPromoteOnPass),
         questions: normalizedQuestions
     })
+
+    if (exam.status === 'active') {
+        notifyTargetedStudentsAboutExam(exam)
+    }
 
     return exam
 }
@@ -261,6 +315,8 @@ const updateExam = async (examId, examData, user) => {
         err.statusCode = 403
         throw err
     }
+
+    const prevStatus = exam.status
 
     const {
         title,
@@ -311,6 +367,11 @@ const updateExam = async (examId, examData, user) => {
     }
 
     await exam.save()
+
+    if (exam.status === 'active' && prevStatus !== 'active') {
+        notifyTargetedStudentsAboutExam(exam)
+    }
+
     return exam
 }
 
@@ -467,18 +528,26 @@ const saveExamProgress = async (examId, answers, user) => {
 
     if (Array.isArray(answers)) {
         answers.forEach(item => {
-            const existing = attempt.answers.find(a => a.questionIndex === item.questionIndex)
-            if (existing) {
-                existing.answer = item.answer !== undefined ? item.answer : existing.answer
-            } else {
-                attempt.answers.push({
-                    questionIndex: item.questionIndex,
-                    questionId: item.questionId || '',
-                    answer: item.answer || '',
-                    score: null,
-                    feedback: '',
-                    autoGraded: false
-                })
+            const rawAns = item.answer !== undefined ? item.answer : (item.answerText !== undefined ? item.answerText : '')
+            let qIdx = (typeof item.questionIndex === 'number') ? item.questionIndex : -1
+            if (qIdx < 0 && exam && Array.isArray(exam.questions)) {
+                qIdx = exam.questions.findIndex(q => String(q._id || q.id) === String(item.questionId || item.question))
+            }
+            if (qIdx >= 0) {
+                const existing = attempt.answers.find(a => a.questionIndex === qIdx)
+                if (existing) {
+                    existing.answer = rawAns
+                    if (item.questionId) existing.questionId = item.questionId
+                } else {
+                    attempt.answers.push({
+                        questionIndex: qIdx,
+                        questionId: item.questionId || (exam.questions[qIdx] ? String(exam.questions[qIdx]._id || exam.questions[qIdx].id) : ''),
+                        answer: rawAns,
+                        score: null,
+                        feedback: '',
+                        autoGraded: false
+                    })
+                }
             }
         })
     }
@@ -523,18 +592,26 @@ const submitExamAttempt = async (examId, finalAnswers, user) => {
     // Merge any final answers
     if (Array.isArray(finalAnswers)) {
         finalAnswers.forEach(item => {
-            const existing = attempt.answers.find(a => a.questionIndex === item.questionIndex)
-            if (existing) {
-                existing.answer = item.answer !== undefined ? item.answer : existing.answer
-            } else {
-                attempt.answers.push({
-                    questionIndex: item.questionIndex,
-                    questionId: item.questionId || '',
-                    answer: item.answer || '',
-                    score: null,
-                    feedback: '',
-                    autoGraded: false
-                })
+            const rawAns = item.answer !== undefined ? item.answer : (item.answerText !== undefined ? item.answerText : '')
+            let qIdx = (typeof item.questionIndex === 'number') ? item.questionIndex : -1
+            if (qIdx < 0 && exam && Array.isArray(exam.questions)) {
+                qIdx = exam.questions.findIndex(q => String(q._id || q.id) === String(item.questionId || item.question))
+            }
+            if (qIdx >= 0) {
+                const existing = attempt.answers.find(a => a.questionIndex === qIdx)
+                if (existing) {
+                    existing.answer = rawAns
+                    if (item.questionId) existing.questionId = item.questionId
+                } else {
+                    attempt.answers.push({
+                        questionIndex: qIdx,
+                        questionId: item.questionId || (exam.questions[qIdx] ? String(exam.questions[qIdx]._id || exam.questions[qIdx].id) : ''),
+                        answer: rawAns,
+                        score: null,
+                        feedback: '',
+                        autoGraded: false
+                    })
+                }
             }
         })
     }
@@ -587,6 +664,16 @@ const submitExamAttempt = async (examId, finalAnswers, user) => {
             recipient: exam.teacher,
             title: 'تسليم امتحان جديد',
             message: `قام الطالب بإرسال إجابات امتحان: ${exam.title}`,
+            type: 'exam'
+        })
+    } catch (_) {}
+
+    // Notify student of receipt
+    try {
+        await notificationService.createNotification({
+            recipient: user._id,
+            title: 'تم استلام إجابات الامتحان بنجاح',
+            message: `تم تسليم إجاباتك لامتحان: ${exam.title} بنجاح، وستظهر نتيجتك فور اعتمادها ونشرها.`,
             type: 'exam'
         })
     } catch (_) {}
@@ -670,7 +757,9 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
         throw err
     }
 
-    const { answersScores, teacherNotes, isApproved, directScore } = gradeData
+    const { answersScores, teacherNotes, directScore } = gradeData
+    const scoresList = Array.isArray(answersScores) ? answersScores : (Array.isArray(gradeData.grades) ? gradeData.grades : null)
+    const isApproved = gradeData.isApproved !== false
 
     if (typeof directScore === 'number') {
         // Direct score entry (especially for in_person or oral recitation exams)
@@ -680,12 +769,13 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
             throw err
         }
         attempt.score = directScore
-    } else if (Array.isArray(answersScores)) {
-        answersScores.forEach(item => {
+    } else if (scoresList) {
+        scoresList.forEach(item => {
             const ans = attempt.answers.find(a => a.questionIndex === item.questionIndex)
             if (ans) {
                 if (typeof item.score === 'number') ans.score = item.score
-                if (item.feedback !== undefined) ans.feedback = item.feedback.trim()
+                const fb = item.feedback !== undefined ? item.feedback : (item.teacherNotes !== undefined ? item.teacherNotes : '')
+                if (fb) ans.feedback = fb.trim()
             }
         })
 
@@ -761,6 +851,43 @@ const publishExamResults = async (examId, user) => {
                 type: 'exam'
             })
         } catch (_) {}
+    }
+
+    // Auto level promotion for passing students if enabled
+    if (exam.type === 'level' && exam.autoPromoteOnPass) {
+        for (const att of attempts) {
+            if (att.isPassed) {
+                try {
+                    const studentUser = await User.findById(att.student)
+                    if (studentUser) {
+                        const targetLvl = await Level.findById(exam.targetLevel)
+                        const nextLvlId = (targetLvl && targetLvl.nextLevel) ? targetLvl.nextLevel : exam.targetLevel
+                        if (nextLvlId && String(studentUser.currentLevel) !== String(nextLvlId)) {
+                            const prevLevel = studentUser.currentLevel
+                            studentUser.currentLevel = nextLvlId
+                            await studentUser.save()
+                            await StudentLevelHistory.create({
+                                student: studentUser._id,
+                                previousLevel: prevLevel,
+                                newLevel: nextLvlId,
+                                changedBy: user._id,
+                                changeDate: new Date(),
+                                reason: 'اجتياز امتحان الانتقال المعتمد',
+                                exam: exam._id
+                            })
+                            await notificationService.createNotification({
+                                recipient: studentUser._id,
+                                title: 'ترقية المستوى التعليمي',
+                                message: `تهانينا! لاجتيازك بنجاح امتحان "${exam.title}"، تمت ترقيتك للمستوى التالي.`,
+                                type: 'level'
+                            })
+                        }
+                    }
+                } catch (pErr) {
+                    console.error("Auto promote on pass error:", pErr)
+                }
+            }
+        }
     }
 
     return { message: 'تم نشر نتائج الامتحان بنجاح' }

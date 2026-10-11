@@ -8,6 +8,7 @@ router.use(authMidllware)
 
 router.get('/progress', matnController.getMatnProgress)
 router.get('/progress/student/:studentId', matnController.getStudentMatnProgressByStudentId)
+router.get('/progress/:studentId', matnController.getStudentMatnProgressByStudentId)
 router.post('/progress', roleMidlleWare('admin', 'teacher'), matnController.createStudentMatnProgress)
 router.put('/progress/:id', roleMidlleWare('admin', 'teacher'), matnController.updateStudentMatnProgress)
 router.delete('/progress/:id', roleMidlleWare('admin', 'teacher'), matnController.deleteStudentMatnProgress)
@@ -15,6 +16,7 @@ router.delete('/progress/:id', roleMidlleWare('admin', 'teacher'), matnControlle
 router.get('/', matnController.getMatns)
 router.get('/:id', matnController.getMatnById)
 router.post('/', roleMidlleWare('admin', 'teacher'), matnController.createMatn)
+router.post('/:id/chapters', roleMidlleWare('admin', 'teacher'), matnController.addChapter)
 router.put('/:id', roleMidlleWare('admin', 'teacher'), matnController.updateMatn)
 router.delete('/:id', roleMidlleWare('admin'), matnController.deleteMatn)
 

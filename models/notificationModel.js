@@ -19,8 +19,13 @@ const notificationSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['announcement', 'evaluation', 'memorization', 'system'],
+        enum: ['announcement', 'evaluation', 'memorization', 'system', 'exam', 'level', 'matn'],
         required: true
+    },
+    link: {
+        type: String,
+        trim: true,
+        default: ''
     },
     isRead: {
         type: Boolean,

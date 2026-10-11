@@ -15,11 +15,10 @@ router.get(
 
 
 // Mark all notifications as read
-router.patch(
-    '/read-all',
-    authMidllware,
-    notificationController.markUsReadAll
-)
+router.patch('/read-all', authMidllware, notificationController.markUsReadAll)
+router.put('/read-all', authMidllware, notificationController.markUsReadAll)
+router.patch('/mark-all-read', authMidllware, notificationController.markUsReadAll)
+router.put('/mark-all-read', authMidllware, notificationController.markUsReadAll)
 
 
 // Get notification by id
@@ -32,6 +31,11 @@ router.get(
 
 // Mark one notification as read
 router.patch(
+    '/:id/read',
+    authMidllware,
+    notificationController.markUsRead
+)
+router.put(
     '/:id/read',
     authMidllware,
     notificationController.markUsRead

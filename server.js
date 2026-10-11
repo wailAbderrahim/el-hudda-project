@@ -47,13 +47,19 @@ app.use(
     cors({
         origin: function (origin, callback) {
 
-            // Allow requests without origin
-            // such as Postman, server-to-server, or local tools
-            if (!origin) {
+            // Allow requests without origin or file protocol (origin === 'null')
+            // such as Postman, server-to-server, file://, or local tools
+            if (!origin || origin === 'null') {
                 return callback(null, true)
             }
 
             const cleanOrigin = origin.replace(/\/+$/, '')
+
+            // Allow any localhost or 127.0.0.1 port in local testing
+            if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin)) {
+                return callback(null, true)
+            }
+
             const isAllowed = allowedOrigins.some(o => o.replace(/\/+$/, '') === cleanOrigin)
 
             if (isAllowed) {
@@ -84,6 +90,7 @@ app.use(express.json())
 app.use('/api/memorization', memorizationRout)
 app.use('/api/auth', authRoute)
 app.use('/api/user', userRoute)
+app.use('/api/users', userRoute)
 app.use('/api/halaqa', halaqaRoute)
 app.use('/api/attendance', attendanceRout)
 app.use('/api/evaluation', evaluationRout)

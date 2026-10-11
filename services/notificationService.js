@@ -23,7 +23,7 @@ const createNotification = async (notificationData)=>{
     if(!message){
         throw new Error('message required')
     }
-    const allowedTypes = ['announcement', 'evaluation', 'memorization', 'system']
+    const allowedTypes = ['announcement', 'evaluation', 'memorization', 'system', 'exam', 'level', 'matn']
     if(!type){
         throw new Error('type required')
     }
@@ -34,9 +34,10 @@ const createNotification = async (notificationData)=>{
         recipient,
         title,
         message,
-        type
+        type,
+        link: notificationData.link || ''
     })
-    wsManager.sendToUser(recipient,notification)
+    wsManager.sendToUser(recipient, notification)
 
     return notification
 }
