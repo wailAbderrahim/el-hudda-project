@@ -34,12 +34,16 @@ const app = express()
 
 const allowedOrigins = [
     'https://el-hudda.vercel.app',
+    'https://elhudda.vercel.app',
+    'https://alhudda.vercel.app',
+    'https://alhudda-quran.vercel.app',
     'http://127.0.0.1:5500',
     'http://localhost:5500',
     'http://127.0.0.1:5000',
     'http://localhost:5000',
     process.env.CLIENT_URL,
-    process.env.FRONTEND_URL
+    process.env.FRONTEND_URL,
+    process.env.CUSTOM_DOMAIN ? (process.env.CUSTOM_DOMAIN.startsWith('http') ? process.env.CUSTOM_DOMAIN : `https://${process.env.CUSTOM_DOMAIN}`) : null
 ].filter(Boolean)
 
 
@@ -57,6 +61,11 @@ app.use(
 
             // Allow any localhost or 127.0.0.1 port in local testing
             if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin)) {
+                return callback(null, true)
+            }
+
+            // Allow verified school domain aliases on vercel.app or cloudns.*
+            if (/^https?:\/\/(el-?hudda|al-?hudda)(-quran)?\.(vercel\.app|cloudns\.(biz|club|org|asia))$/.test(cleanOrigin)) {
                 return callback(null, true)
             }
 

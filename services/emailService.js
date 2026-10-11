@@ -17,9 +17,13 @@ const escapeHtml = (value = '') => {
  * Throws a configuration error if FRONTEND_URL is missing or empty
  */
 const getFrontendUrl = () => {
+    const custom = (process.env.CUSTOM_DOMAIN || '').trim().replace(/\/+$/, '')
+    if (custom) {
+        return custom.startsWith('http') ? custom : `https://${custom}`
+    }
     const raw = (process.env.FRONTEND_URL || process.env.CLIENT_URL || '').trim().replace(/\/+$/, '')
     if (raw && !raw.includes('localhost') && !raw.includes('127.0.0.1') && !raw.includes('onrender.com')) {
-        return raw
+        return raw.startsWith('http') ? raw : `https://${raw}`
     }
     return raw || 'https://el-hudda.vercel.app'
 }
