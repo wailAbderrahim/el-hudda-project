@@ -118,15 +118,16 @@ const getExams = async (user) => {
             const examObj = exam.toObject()
             examObj.questions = stripCorrectAnswers(examObj.questions)
             const myAttempt = attemptsMap[exam._id.toString()]
+            const isAttemptPublished = myAttempt && myAttempt.status === 'published'
             examObj.myAttempt = myAttempt ? {
                 _id: myAttempt._id,
                 status: myAttempt.status,
                 startedAt: myAttempt.startedAt,
                 submittedAt: myAttempt.submittedAt,
-                score: (exam.isResultsPublished || myAttempt.status === 'published') ? myAttempt.score : null,
+                score: isAttemptPublished ? myAttempt.score : null,
                 totalScore: myAttempt.totalScore,
-                percentage: (exam.isResultsPublished || myAttempt.status === 'published') ? myAttempt.percentage : null,
-                isPassed: (exam.isResultsPublished || myAttempt.status === 'published') ? myAttempt.isPassed : null
+                percentage: isAttemptPublished ? myAttempt.percentage : null,
+                isPassed: isAttemptPublished ? myAttempt.isPassed : null
             } : null
             return examObj
         })
@@ -152,24 +153,34 @@ const getExamById = async (examId, user) => {
     const examObj = exam.toObject()
 
     if (user.role === 'student') {
-        const isPublished = exam.isResultsPublished
-        if (!isPublished) {
+        const myAttempt = await ExamAttempt.findOne({ student: user._id, exam: examId })
+        const isAttemptPublished = myAttempt && myAttempt.status === 'published'
+        if (!isAttemptPublished) {
             examObj.questions = stripCorrectAnswers(examObj.questions)
         }
-        const myAttempt = await ExamAttempt.findOne({ student: user._id, exam: examId })
         if (myAttempt) {
+            const sanitizedAnswers = Array.isArray(myAttempt.answers) ? myAttempt.answers.map(a => {
+                const ansObj = a.toObject ? a.toObject() : { ...a }
+                if (!isAttemptPublished) {
+                    ansObj.score = null
+                    ansObj.feedback = ''
+                    delete ansObj.autoGraded
+                }
+                return ansObj
+            }) : []
+
             examObj.myAttempt = {
                 _id: myAttempt._id,
                 status: myAttempt.status,
                 startedAt: myAttempt.startedAt,
                 submittedAt: myAttempt.submittedAt,
                 durationSpentSeconds: myAttempt.durationSpentSeconds,
-                answers: myAttempt.answers,
-                score: (isPublished || myAttempt.status === 'published') ? myAttempt.score : null,
+                answers: sanitizedAnswers,
+                score: isAttemptPublished ? myAttempt.score : null,
                 totalScore: myAttempt.totalScore,
-                percentage: (isPublished || myAttempt.status === 'published') ? myAttempt.percentage : null,
-                isPassed: (isPublished || myAttempt.status === 'published') ? myAttempt.isPassed : null,
-                teacherNotes: (isPublished || myAttempt.status === 'published') ? myAttempt.teacherNotes : ''
+                percentage: isAttemptPublished ? myAttempt.percentage : null,
+                isPassed: isAttemptPublished ? myAttempt.isPassed : null,
+                teacherNotes: isAttemptPublished ? myAttempt.teacherNotes : ''
             }
         } else {
             examObj.myAttempt = null
@@ -753,8 +764,8 @@ const enrichAttemptWithQuestions = (att, examSource) => {
     }
 
     const earned = typeof obj.score === 'number' ? obj.score : null
-    const isGraded = ['graded', 'approved', 'published'].includes(obj.status) || earned !== null
-    obj.isGraded = isGraded
+    const isGraded = ['graded', 'approved', 'published'].includes(obj.status) && (Boolean(obj.gradedAt) || Boolean(obj.gradedBy) || obj.status === 'published')
+    obj.isGraded = Boolean(isGraded)
     obj.score = earned
     obj.totalScoreAwarded = earned
     obj.scoreAwarded = earned
@@ -978,8 +989,19 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
 
     if (publishImmediately) {
         attempt.status = 'published'
-        exam.isResultsPublished = true
-        await exam.save()
+        attempt.gradedBy = user._id
+        attempt.gradedAt = new Date()
+
+        // Check if any other submitted/in-progress attempts remain uncorrected for this exam
+        const remainingUncorrected = await ExamAttempt.countDocuments({
+            exam: exam._id,
+            _id: { $ne: attempt._id },
+            status: { $in: ['submitted', 'in_progress', 'grading'] }
+        })
+        if (remainingUncorrected === 0) {
+            exam.isResultsPublished = true
+            await exam.save()
+        }
 
         // Immediate student notification
         try {
