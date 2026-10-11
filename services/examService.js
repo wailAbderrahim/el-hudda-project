@@ -77,28 +77,30 @@ const getExams = async (user) => {
         const student = await User.findById(user._id)
         const halaqa = await Halaqa.findOne({ students: user._id })
         const halaqaId = halaqa ? halaqa._id : null
-        const currentLevelId = student.currentLevel || null
+        const currentLevelId = student ? student.currentLevel : null
 
         const orConditions = [
-            { targetStudents: user._id }
+            { targetStudents: user._id },
+            {
+                $and: [
+                    { $or: [{ targetLevel: null }, { targetLevel: { $exists: false } }] },
+                    { $or: [{ targetHalaqa: null }, { targetHalaqa: { $exists: false } }] },
+                    { $or: [{ targetStudents: { $size: 0 } }, { targetStudents: null }, { targetStudents: { $exists: false } }] }
+                ]
+            }
         ]
         if (halaqaId) orConditions.push({ targetHalaqa: halaqaId })
         if (currentLevelId) orConditions.push({ targetLevel: currentLevelId })
-        orConditions.push({
-            targetStudents: { $size: 0 },
-            targetHalaqa: null,
-            targetLevel: null
-        })
 
         const exams = await Exam.find({
-            status: { $in: ['active', 'ended'] },
+            status: { $in: ['active', 'scheduled', 'ongoing', 'ended', 'completed', 'graded', 'published'] },
             $or: orConditions
         })
             .sort({ startDate: -1, createdAt: -1 })
             .populate('targetLevel', 'name order')
             .populate('targetMatn', 'name')
             .populate('targetHalaqa', 'name')
-            .populate('teacher', 'name')
+            .populate('teacher', 'name firstName lastName')
 
         // Fetch student's attempts for these exams
         const examIds = exams.map(e => e._id)
@@ -289,13 +291,13 @@ const createExam = async (examData, user) => {
         totalScore: tScore,
         passingScore: pScore,
         teacher: assignedTeacher,
-        status: status || 'draft',
+        status: status || 'active',
         isResultsPublished: false,
         autoPromoteOnPass: Boolean(autoPromoteOnPass),
         questions: normalizedQuestions
     })
 
-    if (exam.status === 'active') {
+    if (exam.status === 'active' || exam.status === 'scheduled') {
         notifyTargetedStudentsAboutExam(exam)
     }
 
@@ -684,6 +686,75 @@ const submitExamAttempt = async (examId, finalAnswers, user) => {
     }
 }
 
+/**
+ * Enriches attempt object with full question text, types, options, and unified property aliases
+ */
+const enrichAttemptWithQuestions = (att, examSource) => {
+    const obj = att.toObject ? att.toObject() : { ...att }
+    const examQuestions = (examSource && examSource.questions && examSource.questions.length > 0)
+        ? examSource.questions
+        : (obj.exam && obj.exam.questions && obj.exam.questions.length > 0 ? obj.exam.questions : [])
+
+    if (examSource && (!obj.exam || typeof obj.exam !== 'object')) {
+        obj.exam = {
+            _id: examSource._id,
+            title: examSource.title,
+            type: examSource.type,
+            format: examSource.format,
+            totalScore: examSource.totalScore,
+            passingScore: examSource.passingScore,
+            isResultsPublished: examSource.isResultsPublished,
+            questions: examQuestions
+        }
+    } else if (obj.exam && typeof obj.exam === 'object' && (!obj.exam.questions || obj.exam.questions.length === 0)) {
+        obj.exam.questions = examQuestions
+    }
+
+    if (Array.isArray(obj.answers)) {
+        obj.answers = obj.answers.map((ans, idx) => {
+            const rawAns = ans.toObject ? ans.toObject() : { ...ans }
+            const q = examQuestions.find(eq =>
+                (eq.id && String(eq.id) === String(rawAns.questionId)) ||
+                (eq._id && String(eq._id) === String(rawAns.questionId))
+            ) || examQuestions[rawAns.questionIndex !== undefined ? rawAns.questionIndex : idx]
+
+            const qText = q ? q.text : (rawAns.questionText || `السؤال رقم ${idx + 1}`)
+            const qType = q ? q.type : (rawAns.questionType || 'single_choice')
+            const qPoints = q ? (typeof q.points === 'number' ? q.points : 10) : 10
+            const qOptions = q && Array.isArray(q.options) ? q.options : []
+            const qCorrect = q ? (q.correctAnswer || '') : ''
+            const qRubric = q ? (q.rubric || '') : ''
+
+            return {
+                ...rawAns,
+                questionIndex: rawAns.questionIndex !== undefined ? rawAns.questionIndex : idx,
+                questionId: rawAns.questionId || (q ? String(q.id || q._id) : `q_${idx}`),
+                questionText: qText,
+                questionType: qType,
+                options: qOptions,
+                correctAnswer: qCorrect,
+                points: qPoints,
+                rubric: qRubric,
+                // Unified aliases for all frontends (Admin, Teacher, and Student)
+                score: typeof rawAns.score === 'number' ? rawAns.score : null,
+                awardedScore: typeof rawAns.score === 'number' ? rawAns.score : null,
+                answer: rawAns.answer !== undefined ? rawAns.answer : '',
+                answerText: rawAns.answer !== undefined ? String(rawAns.answer) : '',
+                feedback: rawAns.feedback || '',
+                teacherFeedback: rawAns.feedback || '',
+                question: {
+                    questionText: qText,
+                    type: qType,
+                    points: qPoints,
+                    options: qOptions
+                }
+            }
+        })
+    }
+
+    return obj
+}
+
 const getExamAttempts = async (examId, user) => {
     if (user.role !== 'admin' && user.role !== 'teacher') {
         const err = new Error('غير مصرح لك بالاطلاع على محاولات الطلاب')
@@ -704,10 +775,16 @@ const getExamAttempts = async (examId, user) => {
         throw err
     }
 
-    return await ExamAttempt.find({ exam: examId })
+    const attempts = await ExamAttempt.find({ exam: examId })
         .sort({ submittedAt: -1, startedAt: -1 })
         .populate('student', 'name firstName lastName email phone currentLevel')
         .populate('gradedBy', 'name')
+        .populate({
+            path: 'exam',
+            select: 'title type format totalScore passingScore questions isResultsPublished'
+        })
+
+    return attempts.map(att => enrichAttemptWithQuestions(att, exam))
 }
 
 const getAllAttempts = async (user, query = {}) => {
@@ -729,11 +806,13 @@ const getAllAttempts = async (user, query = {}) => {
         filter.status = query.status
     }
 
-    return await ExamAttempt.find(filter)
+    const attempts = await ExamAttempt.find(filter)
         .sort({ submittedAt: -1, createdAt: -1 })
-        .populate('exam', 'title totalScore passingScore type format isResultsPublished')
+        .populate('exam', 'title totalScore passingScore type format isResultsPublished questions')
         .populate('student', 'name firstName lastName email phone currentLevel')
         .populate('gradedBy', 'name')
+
+    return attempts.map(att => enrichAttemptWithQuestions(att, att.exam))
 }
 
 const gradeAttempt = async (attemptId, gradeData, user) => {
@@ -757,38 +836,101 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
         throw err
     }
 
-    const { answersScores, teacherNotes, directScore } = gradeData
-    const scoresList = Array.isArray(answersScores) ? answersScores : (Array.isArray(gradeData.grades) ? gradeData.grades : null)
-    const isApproved = gradeData.isApproved !== false
-
-    if (typeof directScore === 'number') {
-        // Direct score entry (especially for in_person or oral recitation exams)
-        if (directScore < 0 || directScore > exam.totalScore) {
-            const err = new Error(`العلامة يجب أن تكون بين 0 و ${exam.totalScore}`)
-            err.statusCode = 400
-            throw err
-        }
-        attempt.score = directScore
-    } else if (scoresList) {
-        scoresList.forEach(item => {
-            const ans = attempt.answers.find(a => a.questionIndex === item.questionIndex)
-            if (ans) {
-                if (typeof item.score === 'number') ans.score = item.score
-                const fb = item.feedback !== undefined ? item.feedback : (item.teacherNotes !== undefined ? item.teacherNotes : '')
-                if (fb) ans.feedback = fb.trim()
-            }
-        })
-
-        // Sum up score
-        let total = 0
-        attempt.answers.forEach(a => {
-            if (typeof a.score === 'number') total += a.score
-        })
-        attempt.score = Math.min(total, exam.totalScore)
+    // 1. General notes / feedback
+    const notes = gradeData.teacherNotes || gradeData.generalNotes || (typeof gradeData.feedback === 'string' ? gradeData.feedback : '')
+    if (notes) {
+        attempt.teacherNotes = notes.trim()
     }
 
-    if (teacherNotes !== undefined) {
-        attempt.teacherNotes = teacherNotes.trim()
+    // 2. Individual Question Scores from Teacher Dashboard (scores object: { [qId]: score })
+    if (gradeData.scores && typeof gradeData.scores === 'object' && !Array.isArray(gradeData.scores)) {
+        Object.entries(gradeData.scores).forEach(([qKey, sVal]) => {
+            const scoreNum = parseFloat(sVal)
+            if (isNaN(scoreNum)) return
+
+            const ans = attempt.answers.find(a =>
+                (a.questionId && String(a.questionId) === String(qKey)) ||
+                (exam.questions && exam.questions.some(eq =>
+                    (String(eq._id) === String(qKey) || String(eq.id) === String(qKey)) &&
+                    (eq.id === a.questionId || eq._id?.toString() === a.questionId)
+                ))
+            ) || attempt.answers[parseInt(qKey, 10)]
+
+            if (ans) {
+                ans.score = scoreNum
+                ans.autoGraded = false
+            }
+        })
+    }
+
+    // Individual Feedback per question from Teacher (feedback object: { [qId]: fb })
+    if (gradeData.feedback && typeof gradeData.feedback === 'object' && !Array.isArray(gradeData.feedback)) {
+        Object.entries(gradeData.feedback).forEach(([qKey, fbVal]) => {
+            if (typeof fbVal !== 'string') return
+            const ans = attempt.answers.find(a =>
+                (a.questionId && String(a.questionId) === String(qKey)) ||
+                (exam.questions && exam.questions.some(eq =>
+                    (String(eq._id) === String(qKey) || String(eq.id) === String(qKey)) &&
+                    (eq.id === a.questionId || eq._id?.toString() === a.questionId)
+                ))
+            ) || attempt.answers[parseInt(qKey, 10)]
+
+            if (ans) {
+                ans.feedback = fbVal.trim()
+            }
+        })
+    }
+
+    // 3. Array of Question Scores (Admin dashboard questionScores, or legacy answersScores/grades)
+    const scoresList = Array.isArray(gradeData.questionScores)
+        ? gradeData.questionScores
+        : (Array.isArray(gradeData.answersScores)
+            ? gradeData.answersScores
+            : (Array.isArray(gradeData.grades) ? gradeData.grades : null))
+
+    if (scoresList) {
+        scoresList.forEach(item => {
+            const qIdx = typeof item.questionIndex === 'number' ? item.questionIndex : parseInt(item.idx, 10)
+            const ans = attempt.answers.find(a =>
+                (typeof qIdx === 'number' && !isNaN(qIdx) && a.questionIndex === qIdx) ||
+                (item.questionId && String(a.questionId) === String(item.questionId)) ||
+                (exam.questions && exam.questions[qIdx] && (exam.questions[qIdx].id === a.questionId || exam.questions[qIdx]._id?.toString() === a.questionId))
+            )
+
+            if (ans) {
+                const s = typeof item.score === 'number' ? item.score : parseFloat(item.score)
+                if (!isNaN(s)) ans.score = s
+                const fb = item.feedback || item.teacherNotes
+                if (fb && typeof fb === 'string') ans.feedback = fb.trim()
+                ans.autoGraded = false
+            }
+        })
+    }
+
+    // 4. Overall Score Calculation
+    const direct = typeof gradeData.directScore === 'number'
+        ? gradeData.directScore
+        : (typeof gradeData.totalScore === 'number'
+            ? gradeData.totalScore
+            : (typeof gradeData.score === 'number' ? gradeData.score : null))
+
+    if (direct !== null && !isNaN(direct) && (!scoresList || scoresList.length === 0) && (!gradeData.scores || Object.keys(gradeData.scores).length === 0)) {
+        attempt.score = Math.min(Math.max(0, direct), exam.totalScore)
+    } else {
+        // Calculate sum from answers
+        let total = 0
+        let hasAnyAnswerScore = false
+        attempt.answers.forEach(a => {
+            if (typeof a.score === 'number') {
+                total += a.score
+                hasAnyAnswerScore = true
+            }
+        })
+        if (hasAnyAnswerScore) {
+            attempt.score = Math.min(total, exam.totalScore)
+        } else if (direct !== null && !isNaN(direct)) {
+            attempt.score = Math.min(Math.max(0, direct), exam.totalScore)
+        }
     }
 
     attempt.totalScore = exam.totalScore
@@ -800,15 +942,15 @@ const gradeAttempt = async (attemptId, gradeData, user) => {
     attempt.gradedBy = user._id
     attempt.gradedAt = new Date()
 
-    if (isApproved) {
-        attempt.status = exam.isResultsPublished ? 'published' : 'approved'
+    if (exam.isResultsPublished) {
+        attempt.status = 'published'
     } else {
-        attempt.status = 'grading'
+        attempt.status = 'approved'
     }
 
     await attempt.save()
 
-    return attempt
+    return enrichAttemptWithQuestions(attempt, exam)
 }
 
 const publishExamResults = async (examId, user) => {
@@ -834,9 +976,9 @@ const publishExamResults = async (examId, user) => {
     exam.isResultsPublished = true
     await exam.save()
 
-    // Update all approved attempts to published
+    // Update all submitted/approved/graded/grading attempts to published
     await ExamAttempt.updateMany(
-        { exam: examId, status: 'approved' },
+        { exam: examId, status: { $in: ['approved', 'graded', 'grading', 'submitted'] } },
         { status: 'published' }
     )
 
@@ -847,7 +989,7 @@ const publishExamResults = async (examId, user) => {
             await notificationService.createNotification({
                 recipient: att.student,
                 title: 'إعلان نتيجة الامتحان',
-                message: `تم اعتماد ونشر نتيجة امتحان: ${exam.title} (${att.score}/${exam.totalScore})`,
+                message: `تم اعتماد ونشر نتيجة امتحان: ${exam.title} (${att.score || 0}/${exam.totalScore})`,
                 type: 'exam'
             })
         } catch (_) {}
@@ -911,21 +1053,23 @@ const getStudentResults = async (studentId, user) => {
 
     let filter = { student: studentId }
     if (user.role === 'student') {
-        // Students see published results or exams with approved/published status
+        // Students see published results or approved results
         filter.status = { $in: ['approved', 'published'] }
     }
 
-    return await ExamAttempt.find(filter)
+    const attempts = await ExamAttempt.find(filter)
         .sort({ submittedAt: -1, createdAt: -1 })
         .populate({
             path: 'exam',
-            select: 'title type format totalScore passingScore targetLevel targetMatn isResultsPublished description',
+            select: 'title type format totalScore passingScore targetLevel targetMatn isResultsPublished description questions',
             populate: [
                 { path: 'targetLevel', select: 'name order' },
                 { path: 'targetMatn', select: 'name' }
             ]
         })
         .populate('gradedBy', 'name')
+
+    return attempts.map(att => enrichAttemptWithQuestions(att, att.exam))
 }
 
 module.exports = {

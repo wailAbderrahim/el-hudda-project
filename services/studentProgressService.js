@@ -9,9 +9,8 @@ const StudentLevelHistory = require('../models/studentLevelHistoryModel')
 const Level = require('../models/levelModel')
 
 const getStudentProgress = async (studentId, user) => {
-    const student = await User.findById(studentId)
+    let student = await User.findById(studentId)
         .select('-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires')
-        .populate('currentLevel', 'name order passingScore requirements nextLevel')
 
     if (!student) {
         const err = new Error('student not found')
@@ -23,6 +22,22 @@ const getStudentProgress = async (studentId, user) => {
         err.statusCode = 400
         throw err
     }
+
+    if (!student.currentLevel) {
+        const defaultLevel = (await Level.findOne({ order: 1 })) || (await Level.findOne())
+        if (defaultLevel) {
+            student.currentLevel = defaultLevel._id
+            await student.save()
+        }
+    }
+
+    student = await User.findById(studentId)
+        .select('-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires')
+        .populate({
+            path: 'currentLevel',
+            select: 'name order passingScore requirements requiredExamsCount nextLevel',
+            populate: { path: 'nextLevel', select: 'name order' }
+        })
 
     // Populate teacher so teacher name is always available instead of raw ObjectId
     const halaqa = await Halaqa.findOne({ students: studentId })
@@ -100,6 +115,7 @@ const getStudentProgress = async (studentId, user) => {
 
     return {
         student,
+        currentLevel: student.currentLevel,
         halaqa,
         attendance: {
             total: totalAtt,

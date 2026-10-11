@@ -1,5 +1,6 @@
 
 const userModel = require('../models/userModel')
+const Level = require('../models/levelModel')
 const bcrypt = require('bcryptjs')
 
 
@@ -175,16 +176,34 @@ const updateUserProfile = async (userId, updateData) => {
 }
 
 const getProfile = async (userId) => {
-    const user = await userModel
+    let user = await userModel
         .findById(userId)
         .select(
             '-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires'
         )
-        .populate('currentLevel', 'name order passingScore requirements nextLevel')
 
     if (!user) {
         throw new Error('User not found')
     }
+
+    if (user.role === 'student' && !user.currentLevel) {
+        const defaultLevel = (await Level.findOne({ order: 1 })) || (await Level.findOne())
+        if (defaultLevel) {
+            user.currentLevel = defaultLevel._id
+            await user.save()
+        }
+    }
+
+    user = await userModel
+        .findById(userId)
+        .select(
+            '-password -verificationToken -verificationTokenExpires -resetPasswordToken -resetPasswordTokenExpires'
+        )
+        .populate({
+            path: 'currentLevel',
+            select: 'name order passingScore requiredExamsCount requirements nextLevel',
+            populate: { path: 'nextLevel', select: 'name order' }
+        })
 
     return user
 }

@@ -1,4 +1,5 @@
 const userModel = require('../models/userModel')
+const Level = require('../models/levelModel')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const { sendVerificationEmail, sendResetPasswordEmail, getFrontendUrl } = require('./emailService')
@@ -73,6 +74,7 @@ const registerUser = async (userData) => {
     const token = crypto.randomBytes(32).toString('hex')
     const tokenExpires = new Date(Date.now() + 15 * 60 * 1000)
     const userName = (userData.name && userData.name.trim()) || `${firstName.trim()} ${lastName.trim()}`
+    const defaultLevel = (await Level.findOne({ order: 1 })) || (await Level.findOne())
 
     const user = await userModel.create({
         firstName: firstName.trim(),
@@ -83,6 +85,7 @@ const registerUser = async (userData) => {
         placeOfBirth: normalizedPlace,
         municipalityOfBirth: normalizedMun,
         educationLevel,
+        currentLevel: defaultLevel ? defaultLevel._id : null,
         email: normalizedEmail,
         password: hashedPassword,
         role: 'student',
